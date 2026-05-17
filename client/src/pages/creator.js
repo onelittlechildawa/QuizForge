@@ -62,7 +62,7 @@ export const creatorPage = {
         <div class="side-note">
           <span class="eyebrow"><i data-lucide="wand-sparkles"></i> DeepSeek 生成</span>
           <h1>创建一份新测评</h1>
-          <p>默认使用 DeepSeek v4-pro。生成失败时会直接提示错误，方便你确认 API Key 或网络状态。</p>
+          <p>模型由后端环境变量控制。生成失败时会直接提示错误，方便你确认 API Key 或网络状态。</p>
           <div class="info-list">
             <span><i data-lucide="database"></i> SQLite 本地持久化</span>
             <span><i data-lucide="link"></i> 短链接分享</span>

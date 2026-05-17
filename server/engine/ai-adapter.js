@@ -1,7 +1,16 @@
 import { AppError } from '../errors.js';
 
-const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/chat/completions';
+const DEFAULT_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-pro';
+
+function resolveEndpoint() {
+  if (process.env.DEEPSEEK_ENDPOINT) {
+    return process.env.DEEPSEEK_ENDPOINT;
+  }
+
+  const baseUrl = process.env.DEEPSEEK_BASE_URL || DEFAULT_BASE_URL;
+  return `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+}
 
 function buildPrompt(topic) {
   return `
@@ -75,6 +84,7 @@ export async function generateQuizWithDeepSeek(topic) {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   const model = process.env.DEEPSEEK_MODEL || DEFAULT_MODEL;
   const timeoutMs = Number(process.env.DEEPSEEK_TIMEOUT_MS || 45000);
+  const endpoint = resolveEndpoint();
 
   if (!apiKey) {
     throw new AppError(500, '缺少 DEEPSEEK_API_KEY，请在 .env 中配置 DeepSeek API Key 后重试。');
@@ -84,7 +94,7 @@ export async function generateQuizWithDeepSeek(topic) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(DEEPSEEK_ENDPOINT, {
+    const response = await fetch(endpoint, {
       method: 'POST',
       signal: controller.signal,
       headers: {
@@ -93,6 +103,7 @@ export async function generateQuizWithDeepSeek(topic) {
       },
       body: JSON.stringify({
         model,
+        thinking: { type: 'disabled' },
         temperature: 0.8,
         max_tokens: 7000,
         response_format: { type: 'json_object' },

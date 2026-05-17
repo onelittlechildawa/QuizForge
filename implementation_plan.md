@@ -15,7 +15,7 @@
 ## User Review Required
 
 > [!IMPORTANT]
-> **AI API 选择**：当前直接接入 **DeepSeek API**，默认模型为 `deepseek-v4-pro`。
+> **AI API 选择**：当前直接接入 **DeepSeek 官方 API**，默认模型为 `deepseek-v4-pro`。
 >
 > **失败策略**：如果 API Key 缺失、网络超时或 DeepSeek 返回错误，系统直接展示失败提示，不使用本地模板兜底，确保演示和真实能力一致。
 
@@ -251,6 +251,7 @@ CREATE INDEX idx_quizzes_created_at ON quizzes(created_at);
 - 统一接口 `generateQuiz(topic)`
 - 默认模型 `deepseek-v4-pro`
 - 使用 DeepSeek OpenAI-compatible Chat Completions 接口
+- 显式关闭 thinking mode，避免推理内容占用输出 token，提升 JSON 返回稳定性
 - 使用 JSON 输出模式，确保 AI 输出规范的 JSON 格式
 - 失败策略：API 失败时直接返回错误，不使用模板兜底
 - **安全性**：API Key 保存在后端环境变量中，不暴露给前端
