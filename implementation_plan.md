@@ -5,7 +5,7 @@
 构建一个类似 MBTI/XXTI 风格的趣味测评网站，核心功能为：用户输入一个主题（如"你是哪种咖啡"、"你的职场性格"），系统通过 DeepSeek API 自动生成结构化、有趣、可解释的娱乐问卷，用户可以分享问卷链接给他人测试，并查看详细的测评报告。
 
 ### 核心卖点
-- 🧠 **DeepSeek 智能生成** — 输入主题即可生成完整问卷（题目 + 维度 + 结果描述）
+- 🧠 **DeepSeek 智能生成** — 输入主题即可生成维度与题目，后端补齐 16 种结果报告
 - 🎯 **结构化娱乐评分** — 采用类人格维度评分模型（类 MBTI 四维对立）
 - 🎨 **精美报告** — 雷达图 + 类型匹配 + 个性化描述
 - 🔗 **一键分享** — 干净短链接 + 二维码，病毒式传播
@@ -79,7 +79,7 @@ graph TB
 | 运行时 | Node.js | 前后端同一语言 |
 | 框架 | Express | 轻量、成熟、生态丰富 |
 | 数据库 | SQLite (`node:sqlite`) | 零配置，单文件数据库，部署简单 |
-| AI 生成 | DeepSeek API (`deepseek-v4-pro`) | 直接生成结构化问卷 JSON |
+| AI 生成 | DeepSeek API (`deepseek-v4-pro`) | 生成结构化维度与题目 JSON |
 | 短 ID | nanoid | 生成美观短链 ID（如 `q_Xk8mP2`） |
 | 跨域 | cors | 开发环境跨域支持 |
 
@@ -231,18 +231,18 @@ CREATE INDEX idx_quizzes_created_at ON quizzes(created_at);
   - 温度维度：热情(F) vs 冷静(T)
   - 风格维度：精致(J) vs 随性(P)
 
-→ 每个维度生成 3 道情景题（共 12 道）
+→ 每个维度生成 3 道情景题（共 12 道），每题 5 档选项：+2 / +1 / 0 / -1 / -2
 
-→ 排列组合生成 2⁴ = 16 种结果类型
+→ 后端按 4 个维度排列组合生成 2⁴ = 16 种结果类型
   如 "ESFT" → "经典意式浓缩"
      "INTP" → "创意冰滴冷萃"
 ```
 
-**结构校验**：必须包含 4 个维度、12 道题、16 种结果类型；不满足结构要求时直接返回错误，请用户重试。
+**结构校验**：DeepSeek 返回必须包含 4 个维度和 12 道题；每题必须有 5 档选项且包含中间选项。16 种结果类型由后端根据维度组合生成，降低单次 AI 输出长度并提升生成稳定性。
 
 #### [NEW] [engine/scorer.js](file:///Users/onelittlechild/Desktop/开源创新大赛/server/engine/scorer.js) — 评分引擎
 
-- 每道题的选项对应维度得分（+1 / -1 二元计分或 Likert 量表）
+- 每道题的选项对应五档维度得分（+2 / +1 / 0 / -1 / -2），允许中间态
 - 维度得分汇总 → 判断极性 → 组合为类型代码
 - 计算每个维度的倾向百分比（如 E:72% / I:28%）
 
@@ -252,7 +252,7 @@ CREATE INDEX idx_quizzes_created_at ON quizzes(created_at);
 - 默认模型 `deepseek-v4-pro`
 - 使用 DeepSeek OpenAI-compatible Chat Completions 接口
 - 显式关闭 thinking mode，避免推理内容占用输出 token，提升 JSON 返回稳定性
-- 使用 JSON 输出模式，确保 AI 输出规范的 JSON 格式
+- 使用 JSON 输出模式，确保 AI 输出规范的维度与题目 JSON
 - 失败策略：API 失败时直接返回错误，不使用模板兜底
 - **安全性**：API Key 保存在后端环境变量中，不暴露给前端
 
@@ -302,7 +302,7 @@ export const api = {
 与之前方案相同，变化在于数据来源从 localStorage 改为 API 调用：
 
 - **home.js** — 首页：热门问卷从 API 获取
-- **creator.js** — 创建页：调用 `POST /api/quizzes` 生成问卷
+- **creator.js** — 创建页：调用 `POST /api/quizzes` 生成问卷，展示生成过程，生成后允许编辑标题、简介、题目和选项文案
 - **quiz.js** — 做题页：通过 `GET /api/quizzes/:id` 加载问卷，完成后 `POST` 提交答案
 - **result.js** — 结果页：通过 `GET /api/results/:rid` 加载结果 + 统计数据
 

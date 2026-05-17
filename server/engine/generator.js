@@ -62,8 +62,15 @@ function normalizeQuestions(questions, dimensions) {
     }
 
     const options = ensureArray(question.options, `questions[${index}].options`);
-    if (options.length < 2 || options.length > 4) {
-      throw new AppError(502, `题目 ${index + 1} 的选项数量不在 2 到 4 个之间，请重试。`);
+    if (options.length !== 5) {
+      throw new AppError(502, `题目 ${index + 1} 的选项数量不是 5 个，请重试。`);
+    }
+
+    const scores = new Set(options.map((option) => Number(option.score)));
+    for (const requiredScore of [-2, -1, 0, 1, 2]) {
+      if (!scores.has(requiredScore)) {
+        throw new AppError(502, `题目 ${index + 1} 没有覆盖完整五档分值，请重试。`);
+      }
     }
 
     counts[dimensionId] += 1;
@@ -74,8 +81,8 @@ function normalizeQuestions(questions, dimensions) {
       text: cleanText(question.text, `第 ${index + 1} 题`),
       options: options.map((option, optionIndex) => {
         const score = Number(option.score);
-        if (![1, -1].includes(score)) {
-          throw new AppError(502, `题目 ${index + 1} 的选项分值不是 1 或 -1，请重试。`);
+        if (![-2, -1, 0, 1, 2].includes(score)) {
+          throw new AppError(502, `题目 ${index + 1} 的选项分值不是 -2 到 2，请重试。`);
         }
         return {
           id: String.fromCharCode(97 + optionIndex),
@@ -120,10 +127,53 @@ function normalizeResults(results) {
   return REQUIRED_TYPE_CODES.map((typeCode) => byCode.get(typeCode));
 }
 
+function findDimensionByCode(dimensions, code) {
+  return dimensions.find((dimension) => dimension.positiveCode === code || dimension.negativeCode === code);
+}
+
+function labelForCode(dimension, code) {
+  return dimension?.positiveCode === code ? dimension.positiveLabel : dimension?.negativeLabel;
+}
+
+function generateResults(topic, dimensions, resultTone = {}) {
+  const emoji = cleanText(resultTone.emoji, '✨');
+  const styleWords = Array.isArray(resultTone.styleWords)
+    ? resultTone.styleWords.map((word) => cleanText(word)).filter(Boolean).slice(0, 3)
+    : [];
+
+  return REQUIRED_TYPE_CODES.map((typeCode) => {
+    const labels = typeCode.split('').map((code) => {
+      const dimension = findDimensionByCode(dimensions, code);
+      return labelForCode(dimension, code) || code;
+    });
+    const [energy, perception, judgment, rhythm] = labels;
+    const name = `${energy}${perception}型`;
+    const tone = styleWords.length ? `带着${styleWords.join('、')}的气质，` : '';
+
+    return {
+      typeCode,
+      name,
+      emoji,
+      summary: `${tone}你在「${topic}」里更像${energy}、${perception}、${judgment}、${rhythm}的组合。`,
+      strengths: [
+        `擅长发挥${energy}的一面`,
+        `看待问题带有${perception}倾向`,
+        `做选择时常体现${judgment}风格`
+      ],
+      suggestions: [
+        `偶尔给${rhythm}之外的节奏留一点空间`,
+        '把这个结果当作轻松参考，不必给自己贴死标签'
+      ]
+    };
+  });
+}
+
 function normalizeQuiz(topic, quiz) {
   const dimensions = normalizeDimensions(quiz.dimensions);
   const questions = normalizeQuestions(quiz.questions, dimensions);
-  const results = normalizeResults(quiz.results);
+  const results = Array.isArray(quiz.results)
+    ? normalizeResults(quiz.results)
+    : generateResults(topic, dimensions, quiz.resultTone);
 
   return {
     title: cleanText(quiz.title, `${topic}测评`),

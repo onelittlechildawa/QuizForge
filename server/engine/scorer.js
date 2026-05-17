@@ -36,7 +36,7 @@ export function scoreQuiz(quiz, answerInput) {
     }
 
     rawScores[question.dimensionId] += Number(option.score);
-    maxScores[question.dimensionId] += 1;
+    maxScores[question.dimensionId] += Math.max(...question.options.map((item) => Math.abs(Number(item.score))));
   }
 
   const dimensionScores = quiz.dimensions.map((dimension) => {

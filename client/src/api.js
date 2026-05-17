@@ -28,6 +28,12 @@ export const api = {
   getQuiz(id) {
     return request(`/api/quizzes/${encodeURIComponent(id)}`);
   },
+  updateQuiz(id, data) {
+    return request(`/api/quizzes/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data)
+    });
+  },
   getPopularQuizzes() {
     return request('/api/quizzes/popular');
   },

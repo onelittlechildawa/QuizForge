@@ -2,6 +2,7 @@ import { AppError } from '../errors.js';
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-pro';
+const DEFAULT_TIMEOUT_MS = 120000;
 
 function resolveEndpoint() {
   if (process.env.DEEPSEEK_ENDPOINT) {
@@ -12,7 +13,14 @@ function resolveEndpoint() {
   return `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
 }
 
-function buildPrompt(topic) {
+function shouldDisableThinking(model) {
+  if (process.env.DEEPSEEK_DISABLE_THINKING) {
+    return process.env.DEEPSEEK_DISABLE_THINKING === 'true';
+  }
+  return model.includes('v4-pro') || model.includes('reasoner');
+}
+
+export function buildPrompt(topic) {
   return `
 请为主题「${topic}」生成一个结构化娱乐测评问卷。它是用于社交分享和自我表达的趣味测评，不是心理诊断。
 
@@ -38,28 +46,25 @@ function buildPrompt(topic) {
       "dimensionId": "d1",
       "text": "题目文本",
       "options": [
-        { "id": "a", "text": "选项文本", "score": 1 },
-        { "id": "b", "text": "选项文本", "score": -1 }
+        { "id": "a", "text": "强烈偏向正向标签的选项", "score": 2 },
+        { "id": "b", "text": "稍微偏向正向标签的选项", "score": 1 },
+        { "id": "c", "text": "中间状态/看情况的选项", "score": 0 },
+        { "id": "d", "text": "稍微偏向反向标签的选项", "score": -1 },
+        { "id": "e", "text": "强烈偏向反向标签的选项", "score": -2 }
       ]
     }
   ],
-  "results": [
-    {
-      "typeCode": "ESFJ",
-      "name": "结果名称",
-      "emoji": "一个相关 emoji",
-      "summary": "结果摘要，60 字以内",
-      "strengths": ["优势 1", "优势 2", "优势 3"],
-      "suggestions": ["建议 1", "建议 2"]
-    }
-  ]
+  "resultTone": {
+    "emoji": "一个和主题相关的 emoji",
+    "styleWords": ["用于结果文案的关键词 1", "关键词 2", "关键词 3"]
+  }
 }
 
 硬性要求：
 1. dimensions 必须正好 4 个，id 必须依次为 d1、d2、d3、d4。
 2. 4 个维度代码必须分别是：d1 使用 E/I，d2 使用 S/N，d3 使用 F/T，d4 使用 J/P；标签和维度名要贴合主题。
-3. questions 必须正好 12 道，每个维度正好 3 道题；每题 2 到 4 个选项；选项 score 只能是 1 或 -1。
-4. results 必须覆盖 16 个 typeCode：ESFJ、ESFP、ESTJ、ESTP、ENFJ、ENFP、ENTJ、ENTP、ISFJ、ISFP、ISTJ、ISTP、INFJ、INFP、INTJ、INTP。
+3. questions 必须正好 12 道，每个维度正好 3 道题；每题必须正好 5 个选项，形成五档选择：score 分别为 2、1、0、-1、-2。每题必须包含一个中间/看情况选项，不能让用户只能二选一。
+4. 不要生成 results 数组，16 个结果类型由后端根据维度组合生成。
 5. 文案要有趣、具体、适合中文用户分享；不要出现“科学诊断”“心理治疗”“疾病”等专业诊断措辞。
 `.trim();
 }
@@ -83,7 +88,7 @@ function parseJsonContent(content) {
 export async function generateQuizWithDeepSeek(topic) {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   const model = process.env.DEEPSEEK_MODEL || DEFAULT_MODEL;
-  const timeoutMs = Number(process.env.DEEPSEEK_TIMEOUT_MS || 45000);
+  const timeoutMs = Number(process.env.DEEPSEEK_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
   const endpoint = resolveEndpoint();
 
   if (!apiKey) {
@@ -94,6 +99,27 @@ export async function generateQuizWithDeepSeek(topic) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    const requestBody = {
+      model,
+      temperature: 0.8,
+      max_tokens: 6000,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: '你是 QuizForge 的问卷生成器。必须输出严格合法的 JSON object，不能输出 Markdown。'
+        },
+        {
+          role: 'user',
+          content: buildPrompt(topic)
+        }
+      ]
+    };
+
+    if (shouldDisableThinking(model)) {
+      requestBody.thinking = { type: 'disabled' };
+    }
+
     const response = await fetch(endpoint, {
       method: 'POST',
       signal: controller.signal,
@@ -101,26 +127,19 @@ export async function generateQuizWithDeepSeek(topic) {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        model,
-        thinking: { type: 'disabled' },
-        temperature: 0.8,
-        max_tokens: 7000,
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'system',
-            content: '你是 QuizForge 的问卷生成器。必须输出严格合法的 JSON object，不能输出 Markdown。'
-          },
-          {
-            role: 'user',
-            content: buildPrompt(topic)
-          }
-        ]
-      })
+      body: JSON.stringify(requestBody)
     });
 
-    const payload = await response.json().catch(() => null);
+    const rawBody = await response.text();
+    let payload = null;
+    try {
+      payload = JSON.parse(rawBody);
+    } catch {
+      throw new AppError(502, 'DeepSeek API 响应不是有效 JSON，请重试。', {
+        status: response.status,
+        bodyStart: rawBody.slice(0, 240)
+      });
+    }
 
     if (!response.ok) {
       const message = payload?.error?.message || `DeepSeek API 请求失败，状态码 ${response.status}`;
@@ -129,7 +148,12 @@ export async function generateQuizWithDeepSeek(topic) {
 
     const content = payload?.choices?.[0]?.message?.content;
     if (!content) {
-      throw new AppError(502, 'DeepSeek 没有返回问卷内容，请重试。', payload);
+      const choice = payload?.choices?.[0];
+      throw new AppError(502, 'DeepSeek 没有返回问卷内容，请重试。', {
+        finishReason: choice?.finish_reason || null,
+        messageKeys: choice?.message ? Object.keys(choice.message) : [],
+        usage: payload?.usage || null
+      });
     }
 
     return {

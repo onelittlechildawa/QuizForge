@@ -99,6 +99,14 @@ export function getQuiz(id) {
   return quizFromRow(db.prepare('SELECT * FROM quizzes WHERE id = ?').get(id));
 }
 
+export function updateQuizEditable(id, { title, intro, questions }) {
+  db.prepare(`
+    UPDATE quizzes
+    SET title = ?, intro = ?, questions = ?
+    WHERE id = ?
+  `).run(title, intro || '', encode(questions), id);
+}
+
 export function listPopularQuizzes(limit = 8) {
   return db.prepare(`
     SELECT id, title, topic, intro, created_at, play_count

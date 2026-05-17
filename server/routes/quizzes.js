@@ -9,7 +9,8 @@ import {
   incrementPlayCount,
   insertQuiz,
   insertResult,
-  listPopularQuizzes
+  listPopularQuizzes,
+  updateQuizEditable
 } from '../db.js';
 
 export const quizzesRouter = express.Router();
@@ -23,6 +24,49 @@ function normalizeTopic(topic) {
     throw new AppError(400, '测评主题请控制在 48 个字符以内。');
   }
   return value;
+}
+
+function cleanText(value, maxLength, label) {
+  const text = String(value || '').trim();
+  if (!text) {
+    throw new AppError(400, `${label}不能为空。`);
+  }
+  if (text.length > maxLength) {
+    throw new AppError(400, `${label}请控制在 ${maxLength} 个字符以内。`);
+  }
+  return text;
+}
+
+function mergeEditableQuestions(existingQuestions, incomingQuestions) {
+  if (!Array.isArray(incomingQuestions) || incomingQuestions.length !== existingQuestions.length) {
+    throw new AppError(400, '题目结构不完整，请刷新后重试。');
+  }
+
+  return existingQuestions.map((question) => {
+    const incoming = incomingQuestions.find((item) => item.id === question.id);
+    if (!incoming) {
+      throw new AppError(400, '题目结构不完整，请刷新后重试。');
+    }
+
+    if (!Array.isArray(incoming.options) || incoming.options.length !== question.options.length) {
+      throw new AppError(400, '选项结构不完整，请刷新后重试。');
+    }
+
+    return {
+      ...question,
+      text: cleanText(incoming.text, 120, '题目文案'),
+      options: question.options.map((option) => {
+        const incomingOption = incoming.options.find((item) => item.id === option.id);
+        if (!incomingOption) {
+          throw new AppError(400, '选项结构不完整，请刷新后重试。');
+        }
+        return {
+          ...option,
+          text: cleanText(incomingOption.text, 80, '选项文案')
+        };
+      })
+    };
+  });
 }
 
 quizzesRouter.get('/popular', asyncRoute(async (req, res) => {
@@ -67,6 +111,28 @@ quizzesRouter.get('/:id', asyncRoute(async (req, res) => {
     throw new AppError(404, '没有找到这个测评。');
   }
   res.json({ quiz });
+}));
+
+quizzesRouter.patch('/:id', asyncRoute(async (req, res) => {
+  const quiz = getQuiz(req.params.id);
+  if (!quiz) {
+    throw new AppError(404, '没有找到这个测评。');
+  }
+
+  const title = cleanText(req.body?.title || quiz.title, 64, '测评标题');
+  const intro = String(req.body?.intro || quiz.intro || '').trim().slice(0, 120);
+  const questions = mergeEditableQuestions(quiz.questions, req.body?.questions);
+
+  updateQuizEditable(quiz.id, { title, intro, questions });
+
+  res.json({
+    quiz: {
+      ...quiz,
+      title,
+      intro,
+      questions
+    }
+  });
 }));
 
 quizzesRouter.post('/:id/submit', asyncRoute(async (req, res) => {
