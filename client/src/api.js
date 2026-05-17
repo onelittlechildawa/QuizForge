@@ -25,6 +25,12 @@ export const api = {
       body: JSON.stringify({ topic })
     });
   },
+  createQuizJob(topic) {
+    return request('/api/quizzes/jobs', {
+      method: 'POST',
+      body: JSON.stringify({ topic })
+    });
+  },
   getQuiz(id) {
     return request(`/api/quizzes/${encodeURIComponent(id)}`);
   },

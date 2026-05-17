@@ -536,6 +536,28 @@ textarea:focus {
   margin-top: 4px;
 }
 
+.generation-progress {
+  overflow: hidden;
+  height: 10px;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.generation-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--blue), var(--teal));
+  transition: width 220ms ease;
+}
+
+.generation-percent {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  text-align: right;
+}
+
 .generation-step {
   display: grid;
   gap: 9px;

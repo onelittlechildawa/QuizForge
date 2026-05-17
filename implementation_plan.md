@@ -15,7 +15,7 @@
 ## User Review Required
 
 > [!IMPORTANT]
-> **AI API 选择**：当前直接接入 **DeepSeek 官方 API**，默认模型为 `deepseek-v4-pro`。
+> **AI API 选择**：当前直接接入 **DeepSeek 官方 API**，默认模型为 `deepseek-v4-flash`，用于降低等待时间。
 >
 > **失败策略**：如果 API Key 缺失、网络超时或 DeepSeek 返回错误，系统直接展示失败提示，不使用本地模板兜底，确保演示和真实能力一致。
 
@@ -79,7 +79,8 @@ graph TB
 | 运行时 | Node.js | 前后端同一语言 |
 | 框架 | Express | 轻量、成熟、生态丰富 |
 | 数据库 | SQLite (`node:sqlite`) | 零配置，单文件数据库，部署简单 |
-| AI 生成 | DeepSeek API (`deepseek-v4-pro`) | 生成结构化维度与题目 JSON |
+| AI 生成 | DeepSeek API (`deepseek-v4-flash`) | 分块生成结构化维度与题目 JSON |
+| 生成进度 | Server-Sent Events (SSE) | 后端分块生成时向前端推送真实进度 |
 | 短 ID | nanoid | 生成美观短链 ID（如 `q_Xk8mP2`） |
 | 跨域 | cors | 开发环境跨域支持 |
 
@@ -183,8 +184,11 @@ CREATE INDEX idx_quizzes_created_at ON quizzes(created_at);
 
 | 端点 | 方法 | 功能 | 说明 |
 |------|------|------|------|
-| `/api/quizzes` | POST | 创建问卷 | 接收主题 → 调用生成引擎 → 存入数据库 → 返回问卷 ID |
+| `/api/quizzes/jobs` | POST | 创建生成任务 | 接收主题 → 返回 job ID 和 SSE 进度地址 |
+| `/api/quizzes/jobs/:jobId/events` | GET | 生成进度流 | 使用 SSE 推送分块生成进度，完成后返回问卷 |
+| `/api/quizzes` | POST | 创建问卷 | 兼容接口：接收主题 → 调用生成引擎 → 存入数据库 → 返回问卷 ID |
 | `/api/quizzes/:id` | GET | 获取问卷 | 根据短 ID 返回完整问卷数据（做题用） |
+| `/api/quizzes/:id` | PATCH | 编辑问卷 | 保存标题、简介、题目和选项文案 |
 | `/api/quizzes/popular` | GET | 热门问卷 | 按 play_count 排序返回热门问卷 |
 
 #### [NEW] [routes/results.js](file:///Users/onelittlechild/Desktop/开源创新大赛/server/routes/results.js) — 结果 API
@@ -218,12 +222,12 @@ CREATE INDEX idx_quizzes_created_at ON quizzes(created_at);
 
 #### [NEW] [engine/generator.js](file:///Users/onelittlechild/Desktop/开源创新大赛/server/engine/generator.js) — DeepSeek 问卷生成引擎
 
-**核心流程**：调用 DeepSeek API 生成类 MBTI 的四维对立模型，并对返回 JSON 做结构校验
+**核心流程**：分块调用 DeepSeek API 生成类 MBTI 的四维对立模型和各维度题目，并对返回 JSON 做结构校验
 
 ```
 输入："你是哪种咖啡？"
 
-→ DeepSeek 分析主题类别（食物/性格/职业/兴趣...）
+→ DeepSeek 分析主题类别（食物/性格/职业/兴趣...）并生成 4 个维度
 
 → 生成 4 对对立维度：
   - 浓度维度：浓烈(E) vs 清淡(I)
@@ -231,14 +235,14 @@ CREATE INDEX idx_quizzes_created_at ON quizzes(created_at);
   - 温度维度：热情(F) vs 冷静(T)
   - 风格维度：精致(J) vs 随性(P)
 
-→ 每个维度生成 3 道情景题（共 12 道），每题 5 档选项：+2 / +1 / 0 / -1 / -2
+→ 按维度分块调用 DeepSeek，每个维度生成 3 道情景题（共 12 道），每题 5 档选项：+2 / +1 / 0 / -1 / -2
 
 → 后端按 4 个维度排列组合生成 2⁴ = 16 种结果类型
   如 "ESFT" → "经典意式浓缩"
      "INTP" → "创意冰滴冷萃"
 ```
 
-**结构校验**：DeepSeek 返回必须包含 4 个维度和 12 道题；每题必须有 5 档选项且包含中间选项。16 种结果类型由后端根据维度组合生成，降低单次 AI 输出长度并提升生成稳定性。
+**结构校验**：第一块返回必须包含 4 个维度；后续每个维度块必须返回 3 道题，每题必须有 5 档选项且包含中间选项。16 种结果类型由后端根据维度组合生成，降低单次 AI 输出长度并提升生成稳定性。
 
 #### [NEW] [engine/scorer.js](file:///Users/onelittlechild/Desktop/开源创新大赛/server/engine/scorer.js) — 评分引擎
 
@@ -249,7 +253,7 @@ CREATE INDEX idx_quizzes_created_at ON quizzes(created_at);
 #### [NEW] [engine/ai-adapter.js](file:///Users/onelittlechild/Desktop/开源创新大赛/server/engine/ai-adapter.js) — DeepSeek API 适配器
 
 - 统一接口 `generateQuiz(topic)`
-- 默认模型 `deepseek-v4-pro`
+- 默认模型 `deepseek-v4-flash`
 - 使用 DeepSeek OpenAI-compatible Chat Completions 接口
 - 显式关闭 thinking mode，避免推理内容占用输出 token，提升 JSON 返回稳定性
 - 使用 JSON 输出模式，确保 AI 输出规范的维度与题目 JSON
@@ -302,7 +306,7 @@ export const api = {
 与之前方案相同，变化在于数据来源从 localStorage 改为 API 调用：
 
 - **home.js** — 首页：热门问卷从 API 获取
-- **creator.js** — 创建页：调用 `POST /api/quizzes` 生成问卷，展示生成过程，生成后允许编辑标题、简介、题目和选项文案
+- **creator.js** — 创建页：创建后端生成任务，通过 SSE 展示真实生成进度，生成后允许编辑标题、简介、题目和选项文案
 - **quiz.js** — 做题页：通过 `GET /api/quizzes/:id` 加载问卷，完成后 `POST` 提交答案
 - **result.js** — 结果页：通过 `GET /api/results/:rid` 加载结果 + 统计数据
 

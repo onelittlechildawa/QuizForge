@@ -1,4 +1,4 @@
-import { generateQuizWithDeepSeek } from './ai-adapter.js';
+import { generateQuizPlanWithDeepSeek, generateQuestionsWithDeepSeek } from './ai-adapter.js';
 import { AppError } from '../errors.js';
 
 const REQUIRED_TYPE_CODES = [
@@ -46,18 +46,18 @@ function normalizeDimensions(dimensions) {
   });
 }
 
-function normalizeQuestions(questions, dimensions) {
+function normalizeQuestionList(questions, dimensions, { expectedCount, startIndex = 0, dimensionId = null, enforceAllDimensions = false } = {}) {
   const items = ensureArray(questions, 'questions');
-  if (items.length !== 12) {
-    throw new AppError(502, 'DeepSeek 返回的题目数量不是 12 道，请重试。');
+  if (items.length !== expectedCount) {
+    throw new AppError(502, `DeepSeek 返回的题目数量不是 ${expectedCount} 道，请重试。`);
   }
 
   const dimensionIds = new Set(dimensions.map((dimension) => dimension.id));
   const counts = Object.fromEntries(dimensions.map((dimension) => [dimension.id, 0]));
 
   const normalized = items.map((question, index) => {
-    const dimensionId = cleanText(question.dimensionId);
-    if (!dimensionIds.has(dimensionId)) {
+    const resolvedDimensionId = dimensionId || cleanText(question.dimensionId);
+    if (!dimensionIds.has(resolvedDimensionId)) {
       throw new AppError(502, `题目 ${index + 1} 绑定了未知维度，请重试。`);
     }
 
@@ -73,11 +73,11 @@ function normalizeQuestions(questions, dimensions) {
       }
     }
 
-    counts[dimensionId] += 1;
+    counts[resolvedDimensionId] += 1;
 
     return {
-      id: `q${index + 1}`,
-      dimensionId,
+      id: `q${startIndex + index + 1}`,
+      dimensionId: resolvedDimensionId,
       text: cleanText(question.text, `第 ${index + 1} 题`),
       options: options.map((option, optionIndex) => {
         const score = Number(option.score);
@@ -94,10 +94,26 @@ function normalizeQuestions(questions, dimensions) {
   });
 
   const invalidDimension = Object.entries(counts).find(([, count]) => count !== 3);
-  if (invalidDimension) {
+  if (enforceAllDimensions && invalidDimension) {
     throw new AppError(502, 'DeepSeek 返回的题目没有做到每个维度 3 道，请重试。');
   }
 
+  return normalized;
+}
+
+function normalizeQuestions(questions, dimensions) {
+  return normalizeQuestionList(questions, dimensions, { expectedCount: 12, enforceAllDimensions: true });
+}
+
+function normalizeQuestionBatch(questions, dimensions, dimension, startIndex) {
+  const normalized = normalizeQuestionList(questions, dimensions, {
+    expectedCount: 3,
+    startIndex,
+    dimensionId: dimension.id
+  });
+  if (normalized.some((question) => question.dimensionId !== dimension.id)) {
+    throw new AppError(502, `${dimension.name} 维度题目绑定错误，请重试。`);
+  }
   return normalized;
 }
 
@@ -185,11 +201,62 @@ function normalizeQuiz(topic, quiz) {
   };
 }
 
-export async function generateQuiz(topic) {
-  const generated = await generateQuizWithDeepSeek(topic);
+export async function generateQuiz(topic, onProgress = () => {}) {
+  onProgress({
+    step: 'plan',
+    progress: 12,
+    message: '正在生成测评设定',
+    detail: 'DeepSeek 正在设计标题、简介和 4 个维度。'
+  });
+  const generatedPlan = await generateQuizPlanWithDeepSeek(topic);
+  const plan = generatedPlan.data;
+  const dimensions = normalizeDimensions(plan.dimensions);
+  const questions = [];
+  const rawQuestionBatches = [];
+
+  onProgress({
+    step: 'dimensions',
+    progress: 28,
+    message: '维度已生成',
+    detail: `已生成 ${dimensions.length} 个类人格维度。`
+  });
+
+  for (const [index, dimension] of dimensions.entries()) {
+    onProgress({
+      step: `questions-${dimension.id}`,
+      progress: 32 + index * 13,
+      message: `正在生成「${dimension.name}」题目`,
+      detail: `DeepSeek 正在生成 ${dimension.positiveLabel} / ${dimension.negativeLabel} 的 5 档题目。`
+    });
+    const generatedQuestions = await generateQuestionsWithDeepSeek(topic, dimension);
+    rawQuestionBatches.push(generatedQuestions.raw);
+    questions.push(...normalizeQuestionBatch(generatedQuestions.data.questions, dimensions, dimension, questions.length));
+    onProgress({
+      step: `questions-${dimension.id}-done`,
+      progress: 45 + index * 13,
+      message: `「${dimension.name}」题目已完成`,
+      detail: `已生成 ${questions.length}/12 道题。`
+    });
+  }
+
+  onProgress({
+    step: 'results',
+    progress: 88,
+    message: '正在整理结果类型',
+    detail: '后端正在按 4 个维度组合生成 16 种结果报告。'
+  });
+
   return {
-    ...normalizeQuiz(topic, generated.quiz),
-    generationModel: generated.model,
-    rawAiResponse: generated.raw
+    title: cleanText(plan.title, `${topic}测评`),
+    topic,
+    intro: cleanText(plan.intro, '用 12 道题看看你更接近哪一种类型。'),
+    dimensions,
+    questions,
+    results: generateResults(topic, dimensions, plan.resultTone),
+    generationModel: generatedPlan.model,
+    rawAiResponse: JSON.stringify({
+      plan: generatedPlan.raw,
+      questionBatches: rawQuestionBatches
+    })
   };
 }

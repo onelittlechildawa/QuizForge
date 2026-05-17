@@ -17,27 +17,44 @@ function renderDimensions(dimensions) {
 }
 
 const generationSteps = [
-  { icon: 'plug', title: '连接 DeepSeek', detail: '发送主题和结构化 JSON 约束' },
-  { icon: 'scan-search', title: '分析主题', detail: '提炼适合社交分享的表达角度' },
-  { icon: 'git-branch', title: '设计维度', detail: '生成 4 组类人格对立维度' },
-  { icon: 'list-checks', title: '编写题目', detail: '每题生成 5 档选项，包含中间态' },
-  { icon: 'sparkles', title: '整理结果', detail: '补齐 16 种类型报告' },
-  { icon: 'database', title: '保存到本地', detail: '写入 SQLite 并生成短链接' }
+  { key: 'connect', icon: 'plug', title: '连接 DeepSeek' },
+  { key: 'plan', icon: 'scan-search', title: '生成设定' },
+  { key: 'dimensions', icon: 'git-branch', title: '确定维度' },
+  { key: 'questions-d1', icon: 'list-checks', title: '第 1 组题目' },
+  { key: 'questions-d2', icon: 'list-checks', title: '第 2 组题目' },
+  { key: 'questions-d3', icon: 'list-checks', title: '第 3 组题目' },
+  { key: 'questions-d4', icon: 'list-checks', title: '第 4 组题目' },
+  { key: 'results', icon: 'sparkles', title: '整理结果' },
+  { key: 'saving', icon: 'database', title: '保存问卷' }
 ];
 
-function renderGenerating(stepIndex = 0) {
+function getStepIndex(step = '') {
+  if (step.endsWith('-done')) {
+    step = step.replace('-done', '');
+  }
+  const exact = generationSteps.findIndex((item) => item.key === step);
+  return exact >= 0 ? exact : 0;
+}
+
+function renderGenerating(state = {}) {
+  const activeIndex = getStepIndex(state.step);
+  const progress = Math.max(0, Math.min(100, Number(state.progress || 0)));
   return `
     <div class="generating-panel">
       <div class="generation-head">
         <i data-lucide="loader-circle" class="spin"></i>
         <div>
-          <h2>正在生成测评</h2>
-          <p>${escapeHtml(generationSteps[Math.min(stepIndex, generationSteps.length - 1)].detail)}</p>
+          <h2>${escapeHtml(state.message || '正在生成测评')}</h2>
+          <p>${escapeHtml(state.detail || '后端正在分块处理生成任务。')}</p>
         </div>
       </div>
+      <div class="generation-progress">
+        <span style="width: ${progress}%"></span>
+      </div>
+      <div class="generation-percent">${progress}%</div>
       <div class="generation-timeline">
         ${generationSteps.map((step, index) => `
-          <div class="generation-step ${index < stepIndex ? 'is-done' : ''} ${index === stepIndex ? 'is-active' : ''}">
+          <div class="generation-step ${index < activeIndex ? 'is-done' : ''} ${index === activeIndex ? 'is-active' : ''}">
             <span><i data-lucide="${step.icon}"></i></span>
             <strong>${escapeHtml(step.title)}</strong>
           </div>
@@ -163,7 +180,7 @@ export const creatorPage = {
     const button = document.querySelector('#generateButton');
     const status = document.querySelector('#creatorStatus');
     let latestQuiz = null;
-    let progressTimer = null;
+    let eventSource = null;
 
     function collectEditedQuiz() {
       return {
@@ -221,25 +238,56 @@ export const creatorPage = {
       }
 
       button.disabled = true;
-      let step = 0;
-      status.innerHTML = renderGenerating(step);
+      status.innerHTML = renderGenerating({
+        step: 'connect',
+        progress: 1,
+        message: '正在创建任务',
+        detail: '请求后端创建真实生成任务。'
+      });
       refreshIcons();
-      clearInterval(progressTimer);
-      progressTimer = setInterval(() => {
-        step = Math.min(step + 1, generationSteps.length - 1);
-        status.innerHTML = renderGenerating(step);
-        refreshIcons();
-      }, 2600);
+      eventSource?.close();
 
       try {
-        const { quiz } = await api.createQuiz(topic);
-        latestQuiz = quiz;
-        status.innerHTML = renderPreview(quiz);
-        bindEditor();
+        const { job } = await api.createQuizJob(topic);
+        eventSource = new EventSource(job.eventUrl);
+
+        eventSource.addEventListener('progress', (event) => {
+          const progress = JSON.parse(event.data);
+          status.innerHTML = renderGenerating(progress);
+          refreshIcons();
+        });
+
+        eventSource.addEventListener('done', (event) => {
+          const payload = JSON.parse(event.data);
+          latestQuiz = payload.quiz;
+          eventSource.close();
+          eventSource = null;
+          status.innerHTML = renderPreview(payload.quiz);
+          bindEditor();
+          button.disabled = false;
+          refreshIcons();
+        });
+
+        eventSource.addEventListener('failed', (event) => {
+          const payload = JSON.parse(event.data);
+          eventSource.close();
+          eventSource = null;
+          status.innerHTML = renderError(payload.detail || '生成失败，请重试。');
+          button.disabled = false;
+          refreshIcons();
+        });
+
+        eventSource.onerror = () => {
+          if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+            status.innerHTML = renderError('生成进度连接中断，请重试。');
+            button.disabled = false;
+            refreshIcons();
+          }
+        };
       } catch (error) {
         status.innerHTML = renderError(error.message);
-      } finally {
-        clearInterval(progressTimer);
         button.disabled = false;
         refreshIcons();
       }

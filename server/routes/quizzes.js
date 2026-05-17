@@ -14,6 +14,156 @@ import {
 } from '../db.js';
 
 export const quizzesRouter = express.Router();
+const generationJobs = new Map();
+const JOB_TTL_MS = 15 * 60 * 1000;
+
+function publicQuizPayload(id, quiz) {
+  return {
+    id,
+    title: quiz.title,
+    topic: quiz.topic,
+    intro: quiz.intro,
+    dimensions: quiz.dimensions,
+    questions: quiz.questions,
+    results: quiz.results,
+    generationModel: quiz.generationModel
+  };
+}
+
+function pruneJobs() {
+  const now = Date.now();
+  for (const [id, job] of generationJobs.entries()) {
+    if (now - job.updatedAt > JOB_TTL_MS && job.subscribers.size === 0) {
+      generationJobs.delete(id);
+    }
+  }
+}
+
+function sendEvent(res, event, payload) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function emitJob(job, event, payload) {
+  job.updatedAt = Date.now();
+  job.events.push({ event, payload });
+  job.events = job.events.slice(-30);
+  for (const subscriber of job.subscribers) {
+    sendEvent(subscriber, event, payload);
+  }
+}
+
+function updateJob(job, update) {
+  Object.assign(job, update);
+  emitJob(job, 'progress', {
+    id: job.id,
+    status: job.status,
+    step: job.step,
+    progress: job.progress,
+    message: job.message,
+    detail: job.detail
+  });
+}
+
+function createGenerationJob(topic) {
+  pruneJobs();
+  const id = `g_${nanoid(8)}`;
+  const job = {
+    id,
+    topic,
+    status: 'queued',
+    step: 'queued',
+    progress: 0,
+    message: '任务已创建',
+    detail: '等待后端开始生成。',
+    quiz: null,
+    error: null,
+    events: [],
+    subscribers: new Set(),
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+
+  generationJobs.set(id, job);
+  emitJob(job, 'progress', {
+    id,
+    status: job.status,
+    step: job.step,
+    progress: job.progress,
+    message: job.message,
+    detail: job.detail
+  });
+
+  queueMicrotask(async () => {
+    try {
+      updateJob(job, {
+        status: 'running',
+        step: 'connect',
+        progress: 5,
+        message: '已连接 DeepSeek',
+        detail: '后端已接收主题，准备分块生成。'
+      });
+
+      const quiz = await generateQuiz(topic, (progress) => {
+        updateJob(job, {
+          status: 'running',
+          ...progress
+        });
+      });
+
+      updateJob(job, {
+        status: 'running',
+        step: 'saving',
+        progress: 94,
+        message: '正在保存问卷',
+        detail: '写入 SQLite 并生成短链接。'
+      });
+
+      const quizId = `q_${nanoid(8)}`;
+      insertQuiz({
+        id: quizId,
+        title: quiz.title,
+        topic: quiz.topic,
+        intro: quiz.intro,
+        dimensions: quiz.dimensions,
+        questions: quiz.questions,
+        results: quiz.results,
+        generationModel: quiz.generationModel,
+        rawAiResponse: quiz.rawAiResponse
+      });
+
+      job.status = 'done';
+      job.step = 'done';
+      job.progress = 100;
+      job.message = '生成完成';
+      job.detail = '问卷已保存，可以编辑或发布。';
+      job.quiz = publicQuizPayload(quizId, quiz);
+      emitJob(job, 'done', {
+        id: job.id,
+        status: job.status,
+        step: job.step,
+        progress: job.progress,
+        message: job.message,
+        detail: job.detail,
+        quiz: job.quiz
+      });
+    } catch (error) {
+      job.status = 'failed';
+      job.step = 'failed';
+      job.error = error.message || '生成失败，请重试。';
+      emitJob(job, 'failed', {
+        id: job.id,
+        status: job.status,
+        step: job.step,
+        progress: job.progress,
+        message: '生成失败',
+        detail: job.error
+      });
+    }
+  });
+
+  return job;
+}
 
 function normalizeTopic(topic) {
   const value = String(topic || '').trim();
@@ -74,6 +224,42 @@ quizzesRouter.get('/popular', asyncRoute(async (req, res) => {
   res.json({ quizzes: listPopularQuizzes(limit) });
 }));
 
+quizzesRouter.post('/jobs', asyncRoute(async (req, res) => {
+  const topic = normalizeTopic(req.body?.topic);
+  const job = createGenerationJob(topic);
+  res.status(202).json({
+    job: {
+      id: job.id,
+      status: job.status,
+      eventUrl: `/api/quizzes/jobs/${job.id}/events`
+    }
+  });
+}));
+
+quizzesRouter.get('/jobs/:jobId/events', (req, res) => {
+  const job = generationJobs.get(req.params.jobId);
+  if (!job) {
+    res.status(404).json({ error: '没有找到这个生成任务。' });
+    return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive'
+  });
+  res.write('\n');
+
+  job.subscribers.add(res);
+  for (const event of job.events) {
+    sendEvent(res, event.event, event.payload);
+  }
+
+  req.on('close', () => {
+    job.subscribers.delete(res);
+  });
+});
+
 quizzesRouter.post('/', asyncRoute(async (req, res) => {
   const topic = normalizeTopic(req.body?.topic);
   const quiz = await generateQuiz(topic);
@@ -93,14 +279,7 @@ quizzesRouter.post('/', asyncRoute(async (req, res) => {
 
   res.status(201).json({
     quiz: {
-      id,
-      title: quiz.title,
-      topic: quiz.topic,
-      intro: quiz.intro,
-      dimensions: quiz.dimensions,
-      questions: quiz.questions,
-      results: quiz.results,
-      generationModel: quiz.generationModel
+      ...publicQuizPayload(id, quiz)
     }
   });
 }));
