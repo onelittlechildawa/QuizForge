@@ -1,0 +1,26 @@
+{
+  "name": "quizforge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "node --no-warnings --watch server/index.js",
+    "dev:client": "vite --host 0.0.0.0 --config client/vite.config.js",
+    "build": "vite build --config client/vite.config.js",
+    "start": "NODE_ENV=production node --no-warnings server/index.js"
+  },
+  "dependencies": {
+    "chart.js": "^4.5.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "lucide": "^0.556.0",
+    "nanoid": "^5.1.6",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "vite": "^7.2.6"
+  }
+}
