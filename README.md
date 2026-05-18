@@ -87,4 +87,4 @@ npx wrangler d1 migrations apply quizforge-prod --remote
 npm run build
 ```
 
-Vite 会输出到根目录 `public/`，Express API 入口为 `api/[...path].js`。在 Vercel 项目环境变量中配置 DeepSeek 和 Cloudflare D1 后即可部署。
+Vite 会输出到根目录 `public/`，Express API 入口为 `api/index.js`。`vercel.json` 会把 `/api/:path*` 重写到这个函数，再交给 Express 处理。在 Vercel 项目环境变量中配置 DeepSeek 和 Cloudflare D1 后即可部署。
