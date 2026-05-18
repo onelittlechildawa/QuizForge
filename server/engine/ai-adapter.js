@@ -140,7 +140,7 @@ export function buildResultsPrompt(topic, dimensions, typeCodes, resultTone = {}
   }));
 
   return `
-请为主题「${topic}」生成趣味测评结果解析。它用于社交分享和自我表达，不是心理诊断。
+请为主题「${topic}」生成趣味测评结果解析，注意测评背景。它用于社交分享和自我表达，建议与优势要针对个人生活。
 
 维度定义：
 ${JSON.stringify(dimensionSummary, null, 2)}
@@ -169,7 +169,6 @@ ${JSON.stringify(typeCodes)}
 1. results 数量必须等于本次 typeCode 数量，且只能包含本次给出的 typeCode。
 2. 每个结果必须解释四个字母分别对应的倾向，不要只是堆砌维度标签。
 3. 文案要有主题感、可分享、有区分度，避免每个结果长得一样。
-4. 不要出现“科学诊断”“心理治疗”“疾病”等专业诊断措辞。
 `.trim();
 }
 
