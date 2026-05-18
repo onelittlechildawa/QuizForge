@@ -55,14 +55,18 @@ function emitJob(job, event, payload) {
 
 function updateJob(job, update) {
   Object.assign(job, update);
-  emitJob(job, 'progress', {
+  const payload = {
     id: job.id,
     status: job.status,
     step: job.step,
     progress: job.progress,
     message: job.message,
     detail: job.detail
-  });
+  };
+  if (Object.prototype.hasOwnProperty.call(update, 'preview')) {
+    payload.preview = update.preview;
+  }
+  emitJob(job, 'progress', payload);
 }
 
 function createGenerationJob(topic) {

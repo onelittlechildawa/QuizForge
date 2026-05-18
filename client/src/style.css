@@ -608,6 +608,110 @@ textarea:focus {
   background: var(--teal);
 }
 
+.generation-insights {
+  display: grid;
+  gap: 14px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.generation-insight-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.generation-insight-head strong {
+  color: #334155;
+  font-size: 15px;
+}
+
+.generation-insight-head span,
+.preview-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.preview-section {
+  display: grid;
+  gap: 9px;
+}
+
+.preview-dimension-row,
+.preview-result-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.preview-dimension,
+.preview-result {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfdff;
+}
+
+.preview-dimension {
+  display: grid;
+  gap: 4px;
+  min-height: 68px;
+  padding: 12px;
+}
+
+.preview-dimension strong,
+.preview-result strong {
+  color: #334155;
+}
+
+.preview-dimension span,
+.preview-result span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.preview-snippet-list {
+  display: grid;
+}
+
+.preview-snippet {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.preview-snippet:first-child {
+  border-top: 0;
+}
+
+.preview-snippet span {
+  min-width: 0;
+  color: var(--teal);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.preview-snippet p,
+.preview-result p {
+  margin: 0;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.58;
+}
+
+.preview-result {
+  display: grid;
+  gap: 6px;
+  min-height: 124px;
+  padding: 12px;
+}
+
 .generating-panel p,
 .success-panel p {
   margin: 0;
@@ -1093,7 +1197,9 @@ textarea:focus {
   }
 
   .quiz-grid,
-  .dimension-grid {
+  .dimension-grid,
+  .preview-dimension-row,
+  .preview-result-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -1134,6 +1240,15 @@ textarea:focus {
   .editor-option {
     grid-template-columns: 1fr;
     gap: 6px;
+  }
+
+  .generation-insight-head,
+  .preview-snippet {
+    grid-template-columns: 1fr;
+  }
+
+  .generation-insight-head {
+    display: grid;
   }
 
   .create-panel,

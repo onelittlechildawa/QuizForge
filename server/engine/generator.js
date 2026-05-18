@@ -238,67 +238,151 @@ export async function generateQuiz(topic, onProgress = () => {}) {
   const generatedPlan = await generateQuizPlanWithDeepSeek(topic);
   const plan = generatedPlan.data;
   const dimensions = normalizeDimensions(plan.dimensions);
-  const questions = [];
-  const results = [];
-  const rawQuestionBatches = [];
-  const rawResultBatches = [];
-
-  onProgress({
-    step: 'dimensions',
-    progress: 28,
-    message: '维度已生成',
-    detail: `已生成 ${dimensions.length} 个类人格维度。`
-  });
-
-  for (const [index, dimension] of dimensions.entries()) {
-    onProgress({
-      step: `questions-${dimension.id}`,
-      progress: 32 + index * 13,
-      message: `正在生成「${dimension.name}」题目`,
-      detail: `DeepSeek 正在生成 ${dimension.positiveLabel} / ${dimension.negativeLabel} 的 5 档题目。`
-    });
-    const generatedQuestions = await generateQuestionsWithDeepSeek(topic, dimension);
-    rawQuestionBatches.push(generatedQuestions.raw);
-    questions.push(...normalizeQuestionBatch(generatedQuestions.data.questions, dimensions, dimension, questions.length));
-    onProgress({
-      step: `questions-${dimension.id}-done`,
-      progress: 45 + index * 13,
-      message: `「${dimension.name}」题目已完成`,
-      detail: `已生成 ${questions.length}/12 道题。`
-    });
-  }
-
-  onProgress({
-    step: 'results',
-    progress: 84,
-    message: '正在生成结果解析',
-    detail: 'DeepSeek 正在分批生成 16 种结果报告。'
-  });
-
-  const resultBatches = [
+  const resultBatchTypeCodes = [
     REQUIRED_TYPE_CODES.slice(0, 4),
     REQUIRED_TYPE_CODES.slice(4, 8),
     REQUIRED_TYPE_CODES.slice(8, 12),
     REQUIRED_TYPE_CODES.slice(12, 16)
   ];
+  const questionBatches = new Array(dimensions.length);
+  const resultBatches = new Array(resultBatchTypeCodes.length);
+  const rawQuestionBatches = new Array(dimensions.length);
+  const rawResultBatches = new Array(resultBatchTypeCodes.length);
+  const completedSteps = ['plan', 'dimensions'];
+  const totalParallelTasks = dimensions.length + resultBatchTypeCodes.length;
+  let completedParallelTasks = 0;
+  let failed = false;
 
-  for (const [index, typeCodes] of resultBatches.entries()) {
+  const generatedQuestionCount = () => questionBatches.reduce((sum, batch) => sum + (batch?.length || 0), 0);
+  const generatedResultCount = () => resultBatches.reduce((sum, batch) => sum + (batch?.length || 0), 0);
+  const parallelPreview = () => ({
+    total: totalParallelTasks,
+    completed: completedParallelTasks,
+    questionCount: generatedQuestionCount(),
+    resultCount: generatedResultCount()
+  });
+  const parallelProgress = () => Math.round(30 + (completedParallelTasks / totalParallelTasks) * 58);
+
+  const emitCompletedBatch = ({ step, message, detail, preview }) => {
+    if (failed) return;
+    completedParallelTasks += 1;
+    completedSteps.push(step);
     onProgress({
-      step: `results-${index + 1}`,
-      progress: 84 + index * 3,
-      message: `正在生成第 ${index + 1} 组结果解析`,
-      detail: `DeepSeek 正在撰写 ${typeCodes.join('、')} 的结果报告。`
+      step: `${step}-done`,
+      progress: parallelProgress(),
+      message,
+      detail,
+      preview: {
+        ...preview,
+        completedStep: step,
+        completedSteps: [...completedSteps],
+        parallel: parallelPreview()
+      }
     });
-    const generatedResults = await generateResultsWithDeepSeek(topic, dimensions, typeCodes, plan.resultTone);
-    rawResultBatches.push(generatedResults.raw);
-    results.push(...normalizeResultBatch(generatedResults.data.results, typeCodes));
-    onProgress({
-      step: `results-${index + 1}-done`,
-      progress: 87 + index * 3,
-      message: `第 ${index + 1} 组结果解析已完成`,
-      detail: `已生成 ${results.length}/16 个结果报告。`
-    });
+  };
+
+  onProgress({
+    step: 'dimensions',
+    progress: 28,
+    message: '维度已生成',
+    detail: `已生成 ${dimensions.length} 个类人格维度。`,
+    preview: {
+      completedSteps: [...completedSteps],
+      dimensions: dimensions.map((dimension) => ({
+        id: dimension.id,
+        name: dimension.name,
+        positiveLabel: dimension.positiveLabel,
+        negativeLabel: dimension.negativeLabel,
+        description: dimension.description
+      }))
+    }
+  });
+
+  onProgress({
+    step: 'parallel',
+    progress: 30,
+    message: '正在并行生成题目和结果',
+    detail: `已同时提交 ${totalParallelTasks} 个批次：4 组题目、4 组结果解析。`,
+    preview: {
+      completedSteps: [...completedSteps],
+      parallel: parallelPreview()
+    }
+  });
+
+  const questionTasks = dimensions.map(async (dimension, index) => {
+    try {
+      const generatedQuestions = await generateQuestionsWithDeepSeek(topic, dimension);
+      rawQuestionBatches[index] = generatedQuestions.raw;
+      const normalizedQuestions = normalizeQuestionBatch(
+        generatedQuestions.data.questions,
+        dimensions,
+        dimension,
+        index * 3
+      );
+      questionBatches[index] = normalizedQuestions;
+      emitCompletedBatch({
+        step: `questions-${dimension.id}`,
+        message: `「${dimension.name}」题目已完成`,
+        detail: `已生成 ${generatedQuestionCount()}/12 道题，${completedParallelTasks + 1}/${totalParallelTasks} 个批次完成。`,
+        preview: {
+          questionBatch: {
+            index,
+            dimensionId: dimension.id,
+            dimensionName: dimension.name,
+            labels: `${dimension.positiveLabel} / ${dimension.negativeLabel}`,
+            questions: normalizedQuestions.map((question) => ({
+              id: question.id,
+              text: question.text
+            }))
+          }
+        }
+      });
+      return normalizedQuestions;
+    } catch (error) {
+      failed = true;
+      throw error;
+    }
+  });
+
+  const resultTasks = resultBatchTypeCodes.map(async (typeCodes, index) => {
+    try {
+      const generatedResults = await generateResultsWithDeepSeek(topic, dimensions, typeCodes, plan.resultTone);
+      rawResultBatches[index] = generatedResults.raw;
+      const normalizedResults = normalizeResultBatch(generatedResults.data.results, typeCodes);
+      resultBatches[index] = normalizedResults;
+      emitCompletedBatch({
+        step: `results-${index + 1}`,
+        message: `第 ${index + 1} 组结果解析已完成`,
+        detail: `已生成 ${generatedResultCount()}/16 个结果报告，${completedParallelTasks + 1}/${totalParallelTasks} 个批次完成。`,
+        preview: {
+          resultBatch: {
+            index,
+            typeCodes,
+            results: normalizedResults.map((result) => ({
+              typeCode: result.typeCode,
+              name: result.name,
+              emoji: result.emoji,
+              summary: result.summary
+            }))
+          }
+        }
+      });
+      return normalizedResults;
+    } catch (error) {
+      failed = true;
+      throw error;
+    }
+  });
+
+  try {
+    await Promise.all([...questionTasks, ...resultTasks]);
+  } catch (error) {
+    failed = true;
+    throw error;
   }
+
+  const questions = questionBatches.flat();
+  const results = resultBatches.flat();
 
   return {
     title: cleanText(plan.title, `${topic}测评`),

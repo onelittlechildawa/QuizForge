@@ -20,6 +20,7 @@ const generationSteps = [
   { key: 'connect', icon: 'plug', title: '连接 DeepSeek' },
   { key: 'plan', icon: 'scan-search', title: '生成设定' },
   { key: 'dimensions', icon: 'git-branch', title: '确定维度' },
+  { key: 'parallel', icon: 'blocks', title: '并行批处理' },
   { key: 'questions-d1', icon: 'list-checks', title: '第 1 组题目' },
   { key: 'questions-d2', icon: 'list-checks', title: '第 2 组题目' },
   { key: 'questions-d3', icon: 'list-checks', title: '第 3 组题目' },
@@ -31,10 +32,15 @@ const generationSteps = [
   { key: 'saving', icon: 'database', title: '保存问卷' }
 ];
 
-function getStepIndex(step = '') {
+function resolveStepKey(step = '') {
   if (step.endsWith('-done')) {
-    step = step.replace('-done', '');
+    return step.replace('-done', '');
   }
+  return step;
+}
+
+function getStepIndex(step = '') {
+  step = resolveStepKey(step);
   if (step === 'results') {
     step = 'results-1';
   }
@@ -42,9 +48,135 @@ function getStepIndex(step = '') {
   return exact >= 0 ? exact : 0;
 }
 
-function renderGenerating(state = {}) {
+function isParallelTaskKey(key) {
+  return key.startsWith('questions-') || key.startsWith('results-');
+}
+
+function createGenerationPreview() {
+  return {
+    dimensions: [],
+    questionBatches: [],
+    resultBatches: [],
+    completedSteps: [],
+    parallel: null
+  };
+}
+
+function upsertBatch(items, batch) {
+  const index = items.findIndex((item) => item.index === batch.index);
+  const next = [...items];
+  if (index >= 0) {
+    next[index] = batch;
+  } else {
+    next.push(batch);
+  }
+  return next.sort((a, b) => a.index - b.index);
+}
+
+function mergeGenerationPreview(current, incoming) {
+  if (!incoming) return current;
+
+  if (Array.isArray(incoming.dimensions)) {
+    current.dimensions = incoming.dimensions;
+  }
+  if (incoming.questionBatch) {
+    current.questionBatches = upsertBatch(current.questionBatches, incoming.questionBatch);
+  }
+  if (incoming.resultBatch) {
+    current.resultBatches = upsertBatch(current.resultBatches, incoming.resultBatch);
+  }
+  if (incoming.parallel) {
+    current.parallel = incoming.parallel;
+  }
+
+  const completedSteps = new Set(current.completedSteps);
+  if (Array.isArray(incoming.completedSteps)) {
+    incoming.completedSteps.forEach((step) => completedSteps.add(step));
+  }
+  if (incoming.completedStep) {
+    completedSteps.add(incoming.completedStep);
+  }
+  current.completedSteps = [...completedSteps];
+  return current;
+}
+
+function renderGenerationInsights(preview = createGenerationPreview()) {
+  const dimensions = preview.dimensions || [];
+  const questionBatches = preview.questionBatches || [];
+  const resultBatches = preview.resultBatches || [];
+  const recentQuestions = questionBatches.flatMap((batch) => (
+    (batch.questions || []).map((question) => ({
+      ...question,
+      dimensionName: batch.dimensionName
+    }))
+  )).slice(-6);
+  const recentResults = resultBatches.flatMap((batch) => batch.results || []).slice(-8);
+  const questionCount = preview.parallel?.questionCount ?? questionBatches.reduce((sum, batch) => sum + (batch.questions?.length || 0), 0);
+  const resultCount = preview.parallel?.resultCount ?? resultBatches.reduce((sum, batch) => sum + (batch.results?.length || 0), 0);
+  const completed = preview.parallel?.completed ?? 0;
+  const total = preview.parallel?.total ?? 8;
+
+  if (!dimensions.length && !recentQuestions.length && !recentResults.length && !preview.parallel) {
+    return '';
+  }
+
+  return `
+    <div class="generation-insights">
+      <div class="generation-insight-head">
+        <strong>生成预览</strong>
+        <span>${completed}/${total} 批 · ${questionCount}/12 题 · ${resultCount}/16 结果</span>
+      </div>
+      ${dimensions.length ? `
+        <div class="preview-section">
+          <span class="preview-label">维度</span>
+          <div class="preview-dimension-row">
+            ${dimensions.map((dimension) => `
+              <div class="preview-dimension">
+                <strong>${escapeHtml(dimension.name)}</strong>
+                <span>${escapeHtml(dimension.positiveLabel)} / ${escapeHtml(dimension.negativeLabel)}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+      ${recentQuestions.length ? `
+        <div class="preview-section">
+          <span class="preview-label">题目片段</span>
+          <div class="preview-snippet-list">
+            ${recentQuestions.map((question) => `
+              <div class="preview-snippet">
+                <span>${escapeHtml(question.dimensionName)}</span>
+                <p>${escapeHtml(question.text)}</p>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+      ${recentResults.length ? `
+        <div class="preview-section">
+          <span class="preview-label">结果解析</span>
+          <div class="preview-result-grid">
+            ${recentResults.map((result) => `
+              <div class="preview-result">
+                <span>${escapeHtml(result.emoji)} ${escapeHtml(result.typeCode)}</span>
+                <strong>${escapeHtml(result.name)}</strong>
+                <p>${escapeHtml(result.summary)}</p>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderGenerating(state = {}, preview = createGenerationPreview()) {
+  const activeKey = resolveStepKey(state.step || '');
   const activeIndex = getStepIndex(state.step);
   const progress = Math.max(0, Math.min(100, Number(state.progress || 0)));
+  const completedSteps = new Set(preview.completedSteps || []);
+  const parallelDone = preview.parallel?.total > 0 && preview.parallel.completed >= preview.parallel.total;
+  const parallelRunning = !parallelDone && (activeKey === 'parallel' || isParallelTaskKey(activeKey));
   return `
     <div class="generating-panel">
       <div class="generation-head">
@@ -59,13 +191,20 @@ function renderGenerating(state = {}) {
       </div>
       <div class="generation-percent">${progress}%</div>
       <div class="generation-timeline">
-        ${generationSteps.map((step, index) => `
-          <div class="generation-step ${index < activeIndex ? 'is-done' : ''} ${index === activeIndex ? 'is-active' : ''}">
-            <span><i data-lucide="${step.icon}"></i></span>
-            <strong>${escapeHtml(step.title)}</strong>
-          </div>
-        `).join('')}
+        ${generationSteps.map((step, index) => {
+          const isDone = completedSteps.has(step.key)
+            || (step.key === 'parallel' && parallelDone)
+            || (!isParallelTaskKey(step.key) && step.key !== 'parallel' && index < activeIndex);
+          const isActive = !isDone && (step.key === activeKey || (step.key === 'parallel' && parallelRunning));
+          return `
+            <div class="generation-step ${isDone ? 'is-done' : ''} ${isActive ? 'is-active' : ''}">
+              <span><i data-lucide="${step.icon}"></i></span>
+              <strong>${escapeHtml(step.title)}</strong>
+            </div>
+          `;
+        }).join('')}
       </div>
+      ${renderGenerationInsights(preview)}
     </div>
   `;
 }
@@ -187,6 +326,7 @@ export const creatorPage = {
     const status = document.querySelector('#creatorStatus');
     let latestQuiz = null;
     let eventSource = null;
+    let generationPreview = createGenerationPreview();
 
     function collectEditedQuiz() {
       return {
@@ -244,12 +384,13 @@ export const creatorPage = {
       }
 
       button.disabled = true;
+      generationPreview = createGenerationPreview();
       status.innerHTML = renderGenerating({
         step: 'connect',
         progress: 1,
         message: '正在创建任务',
         detail: '请求后端创建真实生成任务。'
-      });
+      }, generationPreview);
       refreshIcons();
       eventSource?.close();
 
@@ -259,7 +400,8 @@ export const creatorPage = {
 
         eventSource.addEventListener('progress', (event) => {
           const progress = JSON.parse(event.data);
-          status.innerHTML = renderGenerating(progress);
+          generationPreview = mergeGenerationPreview(generationPreview, progress.preview);
+          status.innerHTML = renderGenerating(progress, generationPreview);
           refreshIcons();
         });
 
