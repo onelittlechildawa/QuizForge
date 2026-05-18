@@ -94,6 +94,50 @@ export function buildQuestionsPrompt(topic, dimension) {
 `.trim();
 }
 
+export function buildResultsPrompt(topic, dimensions, typeCodes, resultTone = {}) {
+  const dimensionSummary = dimensions.map((dimension) => ({
+    name: dimension.name,
+    positiveCode: dimension.positiveCode,
+    positiveLabel: dimension.positiveLabel,
+    negativeCode: dimension.negativeCode,
+    negativeLabel: dimension.negativeLabel,
+    description: dimension.description
+  }));
+
+  return `
+请为主题「${topic}」生成趣味测评结果解析。它用于社交分享和自我表达，不是心理诊断。
+
+维度定义：
+${JSON.stringify(dimensionSummary, null, 2)}
+
+整体语气参考：
+${JSON.stringify(resultTone || {}, null, 2)}
+
+本次只生成这些 typeCode：
+${JSON.stringify(typeCodes)}
+
+必须只返回一个合法 JSON object，不要 Markdown，不要解释。JSON schema 如下：
+{
+  "results": [
+    {
+      "typeCode": "ESFJ",
+      "name": "结果名称，6 到 12 个中文字符，贴合主题",
+      "emoji": "一个相关 emoji",
+      "summary": "结果摘要，45 到 80 字，具体、有画面感",
+      "strengths": ["优势 1", "优势 2", "优势 3"],
+      "suggestions": ["建议 1", "建议 2"]
+    }
+  ]
+}
+
+硬性要求：
+1. results 数量必须等于本次 typeCode 数量，且只能包含本次给出的 typeCode。
+2. 每个结果必须解释四个字母分别对应的倾向，不要只是堆砌维度标签。
+3. 文案要有主题感、可分享、有区分度，避免每个结果长得一样。
+4. 不要出现“科学诊断”“心理治疗”“疾病”等专业诊断措辞。
+`.trim();
+}
+
 function parseJsonContent(content) {
   try {
     return JSON.parse(content);
@@ -150,7 +194,8 @@ export async function requestDeepSeekJson(prompt, { maxTokens = 2000, temperatur
       signal: controller.signal,
       headers: {
         Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        // 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0'
       },
       body: JSON.stringify(requestBody)
     });
@@ -202,4 +247,11 @@ export function generateQuizPlanWithDeepSeek(topic) {
 
 export function generateQuestionsWithDeepSeek(topic, dimension) {
   return requestDeepSeekJson(buildQuestionsPrompt(topic, dimension), { maxTokens: 2200 });
+}
+
+export function generateResultsWithDeepSeek(topic, dimensions, typeCodes, resultTone) {
+  return requestDeepSeekJson(buildResultsPrompt(topic, dimensions, typeCodes, resultTone), {
+    maxTokens: 2600,
+    temperature: 0.82
+  });
 }

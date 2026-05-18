@@ -1,4 +1,4 @@
-import { generateQuizPlanWithDeepSeek, generateQuestionsWithDeepSeek } from './ai-adapter.js';
+import { generateQuizPlanWithDeepSeek, generateQuestionsWithDeepSeek, generateResultsWithDeepSeek } from './ai-adapter.js';
 import { AppError } from '../errors.js';
 
 const REQUIRED_TYPE_CODES = [
@@ -143,6 +143,33 @@ function normalizeResults(results) {
   return REQUIRED_TYPE_CODES.map((typeCode) => byCode.get(typeCode));
 }
 
+function normalizeResultBatch(results, expectedTypeCodes) {
+  const items = ensureArray(results, 'results');
+  const expected = new Set(expectedTypeCodes);
+  const byCode = new Map();
+
+  for (const item of items) {
+    const typeCode = cleanText(item.typeCode).toUpperCase();
+    if (expected.has(typeCode)) {
+      byCode.set(typeCode, {
+        typeCode,
+        name: cleanText(item.name, typeCode),
+        emoji: cleanText(item.emoji, '✨'),
+        summary: cleanText(item.summary, ''),
+        strengths: ensureArray(item.strengths || [], `results.${typeCode}.strengths`).slice(0, 4).map((text) => cleanText(text)).filter(Boolean),
+        suggestions: ensureArray(item.suggestions || [], `results.${typeCode}.suggestions`).slice(0, 3).map((text) => cleanText(text)).filter(Boolean)
+      });
+    }
+  }
+
+  const missing = expectedTypeCodes.filter((typeCode) => !byCode.has(typeCode));
+  if (missing.length > 0) {
+    throw new AppError(502, `DeepSeek 返回的结果解析缺少 ${missing.join('、')}，请重试。`);
+  }
+
+  return expectedTypeCodes.map((typeCode) => byCode.get(typeCode));
+}
+
 function findDimensionByCode(dimensions, code) {
   return dimensions.find((dimension) => dimension.positiveCode === code || dimension.negativeCode === code);
 }
@@ -151,7 +178,7 @@ function labelForCode(dimension, code) {
   return dimension?.positiveCode === code ? dimension.positiveLabel : dimension?.negativeLabel;
 }
 
-function generateResults(topic, dimensions, resultTone = {}) {
+function generateFallbackResults(topic, dimensions, resultTone = {}) {
   const emoji = cleanText(resultTone.emoji, '✨');
   const styleWords = Array.isArray(resultTone.styleWords)
     ? resultTone.styleWords.map((word) => cleanText(word)).filter(Boolean).slice(0, 3)
@@ -189,7 +216,7 @@ function normalizeQuiz(topic, quiz) {
   const questions = normalizeQuestions(quiz.questions, dimensions);
   const results = Array.isArray(quiz.results)
     ? normalizeResults(quiz.results)
-    : generateResults(topic, dimensions, quiz.resultTone);
+    : generateFallbackResults(topic, dimensions, quiz.resultTone);
 
   return {
     title: cleanText(quiz.title, `${topic}测评`),
@@ -212,7 +239,9 @@ export async function generateQuiz(topic, onProgress = () => {}) {
   const plan = generatedPlan.data;
   const dimensions = normalizeDimensions(plan.dimensions);
   const questions = [];
+  const results = [];
   const rawQuestionBatches = [];
+  const rawResultBatches = [];
 
   onProgress({
     step: 'dimensions',
@@ -241,10 +270,35 @@ export async function generateQuiz(topic, onProgress = () => {}) {
 
   onProgress({
     step: 'results',
-    progress: 88,
-    message: '正在整理结果类型',
-    detail: '后端正在按 4 个维度组合生成 16 种结果报告。'
+    progress: 84,
+    message: '正在生成结果解析',
+    detail: 'DeepSeek 正在分批生成 16 种结果报告。'
   });
+
+  const resultBatches = [
+    REQUIRED_TYPE_CODES.slice(0, 4),
+    REQUIRED_TYPE_CODES.slice(4, 8),
+    REQUIRED_TYPE_CODES.slice(8, 12),
+    REQUIRED_TYPE_CODES.slice(12, 16)
+  ];
+
+  for (const [index, typeCodes] of resultBatches.entries()) {
+    onProgress({
+      step: `results-${index + 1}`,
+      progress: 84 + index * 3,
+      message: `正在生成第 ${index + 1} 组结果解析`,
+      detail: `DeepSeek 正在撰写 ${typeCodes.join('、')} 的结果报告。`
+    });
+    const generatedResults = await generateResultsWithDeepSeek(topic, dimensions, typeCodes, plan.resultTone);
+    rawResultBatches.push(generatedResults.raw);
+    results.push(...normalizeResultBatch(generatedResults.data.results, typeCodes));
+    onProgress({
+      step: `results-${index + 1}-done`,
+      progress: 87 + index * 3,
+      message: `第 ${index + 1} 组结果解析已完成`,
+      detail: `已生成 ${results.length}/16 个结果报告。`
+    });
+  }
 
   return {
     title: cleanText(plan.title, `${topic}测评`),
@@ -252,11 +306,12 @@ export async function generateQuiz(topic, onProgress = () => {}) {
     intro: cleanText(plan.intro, '用 12 道题看看你更接近哪一种类型。'),
     dimensions,
     questions,
-    results: generateResults(topic, dimensions, plan.resultTone),
+    results: normalizeResults(results),
     generationModel: generatedPlan.model,
     rawAiResponse: JSON.stringify({
       plan: generatedPlan.raw,
-      questionBatches: rawQuestionBatches
+      questionBatches: rawQuestionBatches,
+      resultBatches: rawResultBatches
     })
   };
 }

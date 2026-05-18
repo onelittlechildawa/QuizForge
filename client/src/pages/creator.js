@@ -24,13 +24,19 @@ const generationSteps = [
   { key: 'questions-d2', icon: 'list-checks', title: '第 2 组题目' },
   { key: 'questions-d3', icon: 'list-checks', title: '第 3 组题目' },
   { key: 'questions-d4', icon: 'list-checks', title: '第 4 组题目' },
-  { key: 'results', icon: 'sparkles', title: '整理结果' },
+  { key: 'results-1', icon: 'sparkles', title: '结果解析 1' },
+  { key: 'results-2', icon: 'sparkles', title: '结果解析 2' },
+  { key: 'results-3', icon: 'sparkles', title: '结果解析 3' },
+  { key: 'results-4', icon: 'sparkles', title: '结果解析 4' },
   { key: 'saving', icon: 'database', title: '保存问卷' }
 ];
 
 function getStepIndex(step = '') {
   if (step.endsWith('-done')) {
     step = step.replace('-done', '');
+  }
+  if (step === 'results') {
+    step = 'results-1';
   }
   const exact = generationSteps.findIndex((item) => item.key === step);
   return exact >= 0 ? exact : 0;

@@ -5,7 +5,7 @@
 构建一个类似 MBTI/XXTI 风格的趣味测评网站，核心功能为：用户输入一个主题（如"你是哪种咖啡"、"你的职场性格"），系统通过 DeepSeek API 自动生成结构化、有趣、可解释的娱乐问卷，用户可以分享问卷链接给他人测试，并查看详细的测评报告。
 
 ### 核心卖点
-- 🧠 **DeepSeek 智能生成** — 输入主题即可生成维度与题目，后端补齐 16 种结果报告
+- 🧠 **DeepSeek 智能生成** — 输入主题即可分块生成维度、题目与 16 种结果解析
 - 🎯 **结构化娱乐评分** — 采用类人格维度评分模型（类 MBTI 四维对立）
 - 🎨 **精美报告** — 雷达图 + 类型匹配 + 个性化描述
 - 🔗 **一键分享** — 干净短链接 + 二维码，病毒式传播
@@ -79,7 +79,7 @@ graph TB
 | 运行时 | Node.js | 前后端同一语言 |
 | 框架 | Express | 轻量、成熟、生态丰富 |
 | 数据库 | SQLite (`node:sqlite`) | 零配置，单文件数据库，部署简单 |
-| AI 生成 | DeepSeek API (`deepseek-v4-flash`) | 分块生成结构化维度与题目 JSON |
+| AI 生成 | DeepSeek API (`deepseek-v4-flash`) | 分块生成结构化维度、题目与结果解析 JSON |
 | 生成进度 | Server-Sent Events (SSE) | 后端分块生成时向前端推送真实进度 |
 | 短 ID | nanoid | 生成美观短链 ID（如 `q_Xk8mP2`） |
 | 跨域 | cors | 开发环境跨域支持 |
@@ -222,7 +222,7 @@ CREATE INDEX idx_quizzes_created_at ON quizzes(created_at);
 
 #### [NEW] [engine/generator.js](file:///Users/onelittlechild/Desktop/开源创新大赛/server/engine/generator.js) — DeepSeek 问卷生成引擎
 
-**核心流程**：分块调用 DeepSeek API 生成类 MBTI 的四维对立模型和各维度题目，并对返回 JSON 做结构校验
+**核心流程**：分块调用 DeepSeek API 生成类 MBTI 的四维对立模型、各维度题目和结果解析，并对返回 JSON 做结构校验
 
 ```
 输入："你是哪种咖啡？"
@@ -237,12 +237,12 @@ CREATE INDEX idx_quizzes_created_at ON quizzes(created_at);
 
 → 按维度分块调用 DeepSeek，每个维度生成 3 道情景题（共 12 道），每题 5 档选项：+2 / +1 / 0 / -1 / -2
 
-→ 后端按 4 个维度排列组合生成 2⁴ = 16 种结果类型
+→ 按 4 个一组分块调用 DeepSeek，生成 2⁴ = 16 种结果解析
   如 "ESFT" → "经典意式浓缩"
      "INTP" → "创意冰滴冷萃"
 ```
 
-**结构校验**：第一块返回必须包含 4 个维度；后续每个维度块必须返回 3 道题，每题必须有 5 档选项且包含中间选项。16 种结果类型由后端根据维度组合生成，降低单次 AI 输出长度并提升生成稳定性。
+**结构校验**：第一块返回必须包含 4 个维度；后续每个维度块必须返回 3 道题，每题必须有 5 档选项且包含中间选项；结果解析按 4 个 typeCode 一组生成，最终必须覆盖 16 种结果类型。
 
 #### [NEW] [engine/scorer.js](file:///Users/onelittlechild/Desktop/开源创新大赛/server/engine/scorer.js) — 评分引擎
 
