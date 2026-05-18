@@ -3,6 +3,7 @@ node_modules/
 .DS_Store
 server/data/*.db
 server/data/*.db-*
+server/logs/
 server/public/
 dist/
 npm-debug.log*

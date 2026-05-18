@@ -1,4 +1,5 @@
 import { AppError } from '../errors.js';
+import { logApiError } from '../logger.js';
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
@@ -195,7 +196,17 @@ export async function requestDeepSeekJson(prompt, { maxTokens = 2000, temperatur
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
-        // 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0'
+        // 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0',
+        'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Origin': 'http://127.0.0.1:8000',
+        'Referer': 'http://127.0.0.1:8000/',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'cross-site'
       },
       body: JSON.stringify(requestBody)
     });
@@ -205,6 +216,14 @@ export async function requestDeepSeekJson(prompt, { maxTokens = 2000, temperatur
     try {
       payload = JSON.parse(rawBody);
     } catch {
+      logApiError({
+        stage: 'parse-response',
+        endpoint,
+        model,
+        status: response.status,
+        message: 'API response is not JSON',
+        bodyStart: rawBody.slice(0, 800)
+      });
       throw new AppError(502, 'DeepSeek API 响应不是有效 JSON，请重试。', {
         status: response.status,
         bodyStart: rawBody.slice(0, 240)
@@ -213,12 +232,33 @@ export async function requestDeepSeekJson(prompt, { maxTokens = 2000, temperatur
 
     if (!response.ok) {
       const message = payload?.error?.message || `DeepSeek API 请求失败，状态码 ${response.status}`;
+      logApiError({
+        stage: 'http-error',
+        endpoint,
+        model,
+        status: response.status,
+        message,
+        error: payload?.error || null,
+        bodyStart: rawBody.slice(0, 800)
+      });
       throw new AppError(502, message, payload);
     }
 
     const content = payload?.choices?.[0]?.message?.content;
     if (!content) {
       const choice = payload?.choices?.[0];
+      logApiError({
+        stage: 'empty-content',
+        endpoint,
+        model,
+        status: response.status,
+        message: 'API returned empty content',
+        finishReason: choice?.finish_reason || null,
+        messageKeys: choice?.message ? Object.keys(choice.message) : [],
+        usage: payload?.usage || null,
+        responseId: payload?.id || null,
+        bodyStart: rawBody.slice(0, 800)
+      });
       throw new AppError(502, 'DeepSeek 没有返回问卷内容，请重试。', {
         finishReason: choice?.finish_reason || null,
         messageKeys: choice?.message ? Object.keys(choice.message) : [],
@@ -233,7 +273,23 @@ export async function requestDeepSeekJson(prompt, { maxTokens = 2000, temperatur
     };
   } catch (error) {
     if (error.name === 'AbortError') {
+      logApiError({
+        stage: 'timeout',
+        endpoint,
+        model,
+        message: `API request timed out after ${timeoutMs}ms`,
+        timeoutMs
+      });
       throw new AppError(504, 'DeepSeek 生成超时，请稍后重试。');
+    }
+    if (!(error instanceof AppError)) {
+      logApiError({
+        stage: 'network-error',
+        endpoint,
+        model,
+        message: error.message,
+        name: error.name
+      });
     }
     throw error;
   } finally {

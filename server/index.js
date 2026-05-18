@@ -7,6 +7,7 @@ import cors from 'cors';
 import { quizzesRouter } from './routes/quizzes.js';
 import { resultsRouter } from './routes/results.js';
 import { AppError } from './errors.js';
+import { getApiErrorLogPath } from './logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -54,4 +55,5 @@ app.use((error, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`QuizForge server running at http://localhost:${port}`);
+  console.log(`API error log: ${getApiErrorLogPath()}`);
 });
