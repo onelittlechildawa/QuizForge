@@ -57,7 +57,7 @@ function markRetryable(error, retryable) {
 
 export function buildPlanPrompt(topic) {
   return `
-请为主题「${topic}」生成一个结构化娱乐测评问卷的基础设定。它用于社交分享和自我表达，不是心理诊断。
+请为主题「${topic}」生成一个结构化娱乐测评问卷的基础设定。
 
 必须只返回一个合法 JSON object，不要 Markdown，不要解释。JSON schema 如下：
 {
@@ -85,7 +85,7 @@ export function buildPlanPrompt(topic) {
 1. dimensions 必须正好 4 个，id 必须依次为 d1、d2、d3、d4。
 2. 4 个维度代码必须分别是：d1 使用 E/I，d2 使用 S/N，d3 使用 F/T，d4 使用 J/P；标签和维度名要贴合主题。
 3. 不要生成 questions 数组，不要生成 results 数组。
-4. 文案要有趣、具体、适合中文用户分享；不要出现“科学诊断”“心理治疗”“疾病”等专业诊断措辞。
+4. 文案要有趣、具体、适合中文用户分享；
 `.trim();
 }
 
@@ -140,7 +140,7 @@ export function buildResultsPrompt(topic, dimensions, typeCodes, resultTone = {}
   }));
 
   return `
-请为主题「${topic}」生成趣味测评结果解析，注意测评背景。它用于社交分享和自我表达，建议与优势要针对真实的个人生活，而不是评测结果中的生活。结果必须符合主题，最好是主题相关的具体角色、地点等对象。
+请为主题「${topic}」生成趣味测评结果解析，注意测评背景。它用于社交分享和自我表达。
 
 维度定义：
 ${JSON.stringify(dimensionSummary, null, 2)}
@@ -169,6 +169,7 @@ ${JSON.stringify(typeCodes)}
 1. results 数量必须等于本次 typeCode 数量，且只能包含本次给出的 typeCode。
 2. 每个结果必须解释四个字母分别对应的倾向，不要只是堆砌维度标签。
 3. 文案要有主题感、可分享、有区分度，避免每个结果长得一样。
+4. 建议与优势要针对真实的个人生活，而不是评测结果中的生活。结果必须符合主题，要包括主题相关的具体角色、地点等对象。如某电影世界中某角色等等。
 `.trim();
 }
 
