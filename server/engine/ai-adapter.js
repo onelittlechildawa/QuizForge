@@ -140,7 +140,7 @@ export function buildResultsPrompt(topic, dimensions, typeCodes, resultTone = {}
   }));
 
   return `
-请为主题「${topic}」生成趣味测评结果解析，注意测评背景。它用于社交分享和自我表达，建议与优势要针对个人生活。
+请为主题「${topic}」生成趣味测评结果解析，注意测评背景。它用于社交分享和自我表达，建议与优势要针对真实的个人生活，而不是评测结果中的生活。结果必须符合主题，最好是主题相关的具体角色、地点等对象。
 
 维度定义：
 ${JSON.stringify(dimensionSummary, null, 2)}
@@ -156,7 +156,7 @@ ${JSON.stringify(typeCodes)}
   "results": [
     {
       "typeCode": "ESFJ",
-      "name": "结果名称，6 到 12 个中文字符，贴合主题",
+      "name": "结果名称，2 到 12 个中文字符，贴合主题",
       "emoji": "一个相关 emoji",
       "summary": "结果摘要，45 到 80 字，具体、有画面感",
       "strengths": ["优势 1", "优势 2", "优势 3"],
