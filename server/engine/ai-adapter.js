@@ -3,7 +3,8 @@ import { logApiError } from '../logger.js';
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
-const DEFAULT_TIMEOUT_MS = 120000;
+const REQUEST_TIMEOUT_MS = 60000;
+const DEFAULT_MAX_RETRIES = 2;
 
 function resolveEndpoint() {
   if (process.env.DEEPSEEK_ENDPOINT) {
@@ -19,6 +20,39 @@ function shouldDisableThinking(model) {
     return process.env.DEEPSEEK_DISABLE_THINKING === 'true';
   }
   return model.includes('v4-pro') || model.includes('reasoner');
+}
+
+function resolveTimeoutMs() {
+  const configured = Number(process.env.DEEPSEEK_TIMEOUT_MS || REQUEST_TIMEOUT_MS);
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return REQUEST_TIMEOUT_MS;
+  }
+  return Math.min(configured, REQUEST_TIMEOUT_MS);
+}
+
+function resolveMaxRetries() {
+  const configured = Number(process.env.DEEPSEEK_MAX_RETRIES);
+  if (!Number.isFinite(configured) || configured < 0) {
+    return DEFAULT_MAX_RETRIES;
+  }
+  return Math.min(Math.floor(configured), 5);
+}
+
+function retryDelayMs(attempt) {
+  return Math.min(800 * (2 ** (attempt - 1)), 3200) + Math.floor(Math.random() * 250);
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableStatus(status) {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
+
+function markRetryable(error, retryable) {
+  error.retryable = retryable;
+  return error;
 }
 
 export function buildPlanPrompt(topic) {
@@ -38,7 +72,7 @@ export function buildPlanPrompt(topic) {
       "positiveLabel": "正向标签",
       "negativeCode": "I",
       "negativeLabel": "反向标签",
-      "description": "这个维度衡量什么，40 字以内"
+      "description": "这个维度衡量什么，30 字以内"
     }
   ],
   "resultTone": {
@@ -158,142 +192,191 @@ function parseJsonContent(content) {
 export async function requestDeepSeekJson(prompt, { maxTokens = 2000, temperature = 0.8 } = {}) {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   const model = process.env.DEEPSEEK_MODEL || DEFAULT_MODEL;
-  const timeoutMs = Number(process.env.DEEPSEEK_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
+  const timeoutMs = resolveTimeoutMs();
+  const maxRetries = resolveMaxRetries();
+  const maxAttempts = maxRetries + 1;
   const endpoint = resolveEndpoint();
 
   if (!apiKey) {
     throw new AppError(500, '缺少 DEEPSEEK_API_KEY，请在 .env 中配置 DeepSeek API Key 后重试。');
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const requestBody = {
-      model,
-      temperature,
-      max_tokens: maxTokens,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: '你是 QuizForge 的问卷生成器。必须输出严格合法的 JSON object，不能输出 Markdown。'
-        },
-        {
-          role: 'user',
-          content: prompt
-        }
-      ]
-    };
-
-    if (shouldDisableThinking(model)) {
-      requestBody.thinking = { type: 'disabled' };
-    }
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        // 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0',
-        'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Origin': 'http://127.0.0.1:8000',
-        'Referer': 'http://127.0.0.1:8000/',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'cross-site'
+  const requestBody = {
+    model,
+    temperature,
+    max_tokens: maxTokens,
+    response_format: { type: 'json_object' },
+    messages: [
+      {
+        role: 'system',
+        content: '你是 QuizForge 的问卷生成器。必须输出严格合法的 JSON object，不能输出 Markdown。'
       },
-      body: JSON.stringify(requestBody)
-    });
+      {
+        role: 'user',
+        content: prompt
+      }
+    ]
+  };
 
-    const rawBody = await response.text();
-    let payload = null;
+  if (shouldDisableThinking(model)) {
+    requestBody.thinking = { type: 'disabled' };
+  }
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
-      payload = JSON.parse(rawBody);
-    } catch {
-      logApiError({
-        stage: 'parse-response',
-        endpoint,
-        model,
-        status: response.status,
-        message: 'API response is not JSON',
-        bodyStart: rawBody.slice(0, 800)
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          // 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0',
+          'Accept': '*/*', 
+          'User-Agent': 'node-fetch'
+        },
+        body: JSON.stringify(requestBody)
       });
-      throw new AppError(502, 'DeepSeek API 响应不是有效 JSON，请重试。', {
-        status: response.status,
-        bodyStart: rawBody.slice(0, 240)
-      });
-    }
 
-    if (!response.ok) {
-      const message = payload?.error?.message || `DeepSeek API 请求失败，状态码 ${response.status}`;
-      logApiError({
-        stage: 'http-error',
-        endpoint,
-        model,
-        status: response.status,
-        message,
-        error: payload?.error || null,
-        bodyStart: rawBody.slice(0, 800)
-      });
-      throw new AppError(502, message, payload);
-    }
+      const rawBody = await response.text();
+      let payload = null;
+      try {
+        payload = JSON.parse(rawBody);
+      } catch {
+        const error = markRetryable(new AppError(502, 'DeepSeek API 响应不是有效 JSON，请重试。', {
+          status: response.status,
+          bodyStart: rawBody.slice(0, 240)
+        }), true);
+        logApiError({
+          stage: 'parse-response',
+          endpoint,
+          model,
+          status: response.status,
+          attempt,
+          maxAttempts,
+          willRetry: attempt < maxAttempts,
+          message: 'API response is not JSON',
+          bodyStart: rawBody.slice(0, 800)
+        });
+        throw error;
+      }
 
-    const content = payload?.choices?.[0]?.message?.content;
-    if (!content) {
-      const choice = payload?.choices?.[0];
-      logApiError({
-        stage: 'empty-content',
-        endpoint,
-        model,
-        status: response.status,
-        message: 'API returned empty content',
-        finishReason: choice?.finish_reason || null,
-        messageKeys: choice?.message ? Object.keys(choice.message) : [],
-        usage: payload?.usage || null,
-        responseId: payload?.id || null,
-        bodyStart: rawBody.slice(0, 800)
-      });
-      throw new AppError(502, 'DeepSeek 没有返回问卷内容，请重试。', {
-        finishReason: choice?.finish_reason || null,
-        messageKeys: choice?.message ? Object.keys(choice.message) : [],
-        usage: payload?.usage || null
-      });
-    }
+      if (!response.ok) {
+        const retryable = isRetryableStatus(response.status);
+        const message = payload?.error?.message || `DeepSeek API 请求失败，状态码 ${response.status}`;
+        const error = markRetryable(new AppError(502, message, {
+          status: response.status,
+          error: payload?.error || null
+        }), retryable);
+        logApiError({
+          stage: 'http-error',
+          endpoint,
+          model,
+          status: response.status,
+          attempt,
+          maxAttempts,
+          willRetry: retryable && attempt < maxAttempts,
+          message,
+          error: payload?.error || null,
+          bodyStart: rawBody.slice(0, 800)
+        });
+        throw error;
+      }
 
-    return {
-      model,
-      raw: content,
-      data: parseJsonContent(content)
-    };
-  } catch (error) {
-    if (error.name === 'AbortError') {
-      logApiError({
-        stage: 'timeout',
-        endpoint,
-        model,
-        message: `API request timed out after ${timeoutMs}ms`,
-        timeoutMs
-      });
-      throw new AppError(504, 'DeepSeek 生成超时，请稍后重试。');
+      const content = payload?.choices?.[0]?.message?.content;
+      if (!content) {
+        const choice = payload?.choices?.[0];
+        const error = markRetryable(new AppError(502, 'DeepSeek 没有返回问卷内容，请重试。', {
+          finishReason: choice?.finish_reason || null,
+          messageKeys: choice?.message ? Object.keys(choice.message) : [],
+          usage: payload?.usage || null
+        }), true);
+        logApiError({
+          stage: 'empty-content',
+          endpoint,
+          model,
+          status: response.status,
+          attempt,
+          maxAttempts,
+          willRetry: attempt < maxAttempts,
+          message: 'API returned empty content',
+          finishReason: choice?.finish_reason || null,
+          messageKeys: choice?.message ? Object.keys(choice.message) : [],
+          usage: payload?.usage || null,
+          responseId: payload?.id || null,
+          bodyStart: rawBody.slice(0, 800)
+        });
+        throw error;
+      }
+
+      try {
+        return {
+          model,
+          raw: content,
+          data: parseJsonContent(content)
+        };
+      } catch (error) {
+        if (error instanceof AppError) {
+          markRetryable(error, true);
+          logApiError({
+            stage: 'content-json-error',
+            endpoint,
+            model,
+            status: response.status,
+            attempt,
+            maxAttempts,
+            willRetry: attempt < maxAttempts,
+            message: error.message,
+            contentStart: content.slice(0, 800)
+          });
+        }
+        throw error;
+      }
+    } catch (error) {
+      let currentError = error;
+      if (error.name === 'AbortError') {
+        currentError = markRetryable(new AppError(504, 'DeepSeek 生成超时，请稍后重试。', {
+          timeoutMs,
+          attempt,
+          maxAttempts
+        }), true);
+        logApiError({
+          stage: 'timeout',
+          endpoint,
+          model,
+          attempt,
+          maxAttempts,
+          willRetry: attempt < maxAttempts,
+          message: `API request timed out after ${timeoutMs}ms`,
+          timeoutMs
+        });
+      } else if (!(error instanceof AppError)) {
+        currentError = markRetryable(new AppError(502, 'DeepSeek API 网络请求失败，请稍后重试。', {
+          name: error.name,
+          message: error.message
+        }), true);
+        logApiError({
+          stage: 'network-error',
+          endpoint,
+          model,
+          attempt,
+          maxAttempts,
+          willRetry: attempt < maxAttempts,
+          message: error.message,
+          name: error.name
+        });
+      }
+
+      if (currentError.retryable && attempt < maxAttempts) {
+        await wait(retryDelayMs(attempt));
+        continue;
+      }
+      throw currentError;
+    } finally {
+      clearTimeout(timer);
     }
-    if (!(error instanceof AppError)) {
-      logApiError({
-        stage: 'network-error',
-        endpoint,
-        model,
-        message: error.message,
-        name: error.name
-      });
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

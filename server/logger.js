@@ -6,6 +6,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const logDir = path.join(__dirname, 'logs');
 const apiErrorLog = path.join(logDir, 'api-errors.log');
 
+function shouldWriteFileLog() {
+  return process.env.NODE_ENV !== 'production' && !process.env.VERCEL;
+}
+
 function safeJson(value) {
   try {
     return JSON.stringify(value);
@@ -15,18 +19,26 @@ function safeJson(value) {
 }
 
 export function logApiError(context) {
-  fs.mkdirSync(logDir, { recursive: true });
-
   const entry = {
     time: new Date().toISOString(),
     ...context
   };
   const line = safeJson(entry);
 
-  fs.appendFileSync(apiErrorLog, `${line}\n`);
-  console.error(`[api-error] ${entry.stage || 'unknown'} ${entry.model || ''} ${entry.status || ''} ${entry.message || ''}`.trim());
+  if (shouldWriteFileLog()) {
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.appendFileSync(apiErrorLog, `${line}\n`);
+  }
+
+  const attempt = entry.attempt && entry.maxAttempts ? `attempt=${entry.attempt}/${entry.maxAttempts}` : '';
+  const retry = entry.willRetry ? 'retrying' : '';
+  const summary = `[api-error] ${entry.stage || 'unknown'} ${entry.model || ''} ${entry.status || ''} ${attempt} ${retry} ${entry.message || ''}`.trim();
+  console.error(`${summary} ${line}`);
 }
 
 export function getApiErrorLogPath() {
+  if (!shouldWriteFileLog()) {
+    return 'stderr';
+  }
   return apiErrorLog;
 }

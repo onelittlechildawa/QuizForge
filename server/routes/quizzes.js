@@ -14,8 +14,7 @@ import {
 } from '../db.js';
 
 export const quizzesRouter = express.Router();
-const generationJobs = new Map();
-const JOB_TTL_MS = 15 * 60 * 1000;
+const HEARTBEAT_INTERVAL_MS = 15000;
 
 function publicQuizPayload(id, quiz) {
   return {
@@ -30,143 +29,88 @@ function publicQuizPayload(id, quiz) {
   };
 }
 
-function pruneJobs() {
-  const now = Date.now();
-  for (const [id, job] of generationJobs.entries()) {
-    if (now - job.updatedAt > JOB_TTL_MS && job.subscribers.size === 0) {
-      generationJobs.delete(id);
-    }
-  }
-}
-
 function sendEvent(res, event, payload) {
+  if (res.writableEnded || res.destroyed) return;
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-function emitJob(job, event, payload) {
-  job.updatedAt = Date.now();
-  job.events.push({ event, payload });
-  job.events = job.events.slice(-30);
-  for (const subscriber of job.subscribers) {
-    sendEvent(subscriber, event, payload);
-  }
-}
-
-function updateJob(job, update) {
-  Object.assign(job, update);
+function sendProgress(res, jobId, update) {
   const payload = {
-    id: job.id,
-    status: job.status,
-    step: job.step,
-    progress: job.progress,
-    message: job.message,
-    detail: job.detail
+    id: jobId,
+    status: 'running',
+    step: update.step,
+    progress: update.progress,
+    message: update.message,
+    detail: update.detail
   };
   if (Object.prototype.hasOwnProperty.call(update, 'preview')) {
     payload.preview = update.preview;
   }
-  emitJob(job, 'progress', payload);
+  sendEvent(res, 'progress', payload);
 }
 
-function createGenerationJob(topic) {
-  pruneJobs();
-  const id = `g_${nanoid(8)}`;
-  const job = {
-    id,
-    topic,
+function writeSseHeaders(res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+  res.write('\n');
+  res.flushHeaders?.();
+}
+
+async function streamGenerationJob(topic, res, jobId) {
+  sendEvent(res, 'progress', {
+    id: jobId,
     status: 'queued',
     step: 'queued',
     progress: 0,
     message: '任务已创建',
-    detail: '等待后端开始生成。',
-    quiz: null,
-    error: null,
-    events: [],
-    subscribers: new Set(),
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  };
-
-  generationJobs.set(id, job);
-  emitJob(job, 'progress', {
-    id,
-    status: job.status,
-    step: job.step,
-    progress: job.progress,
-    message: job.message,
-    detail: job.detail
+    detail: '等待后端开始生成。'
   });
 
-  queueMicrotask(async () => {
-    try {
-      updateJob(job, {
-        status: 'running',
-        step: 'connect',
-        progress: 5,
-        message: '已连接 DeepSeek',
-        detail: '后端已接收主题，准备分块生成。'
-      });
-
-      const quiz = await generateQuiz(topic, (progress) => {
-        updateJob(job, {
-          status: 'running',
-          ...progress
-        });
-      });
-
-      updateJob(job, {
-        status: 'running',
-        step: 'saving',
-        progress: 94,
-        message: '正在保存问卷',
-        detail: '写入 SQLite 并生成短链接。'
-      });
-
-      const quizId = `q_${nanoid(8)}`;
-      insertQuiz({
-        id: quizId,
-        title: quiz.title,
-        topic: quiz.topic,
-        intro: quiz.intro,
-        dimensions: quiz.dimensions,
-        questions: quiz.questions,
-        results: quiz.results,
-        generationModel: quiz.generationModel,
-        rawAiResponse: quiz.rawAiResponse
-      });
-
-      job.status = 'done';
-      job.step = 'done';
-      job.progress = 100;
-      job.message = '生成完成';
-      job.detail = '问卷已保存，可以编辑或发布。';
-      job.quiz = publicQuizPayload(quizId, quiz);
-      emitJob(job, 'done', {
-        id: job.id,
-        status: job.status,
-        step: job.step,
-        progress: job.progress,
-        message: job.message,
-        detail: job.detail,
-        quiz: job.quiz
-      });
-    } catch (error) {
-      job.status = 'failed';
-      job.step = 'failed';
-      job.error = error.message || '生成失败，请重试。';
-      emitJob(job, 'failed', {
-        id: job.id,
-        status: job.status,
-        step: job.step,
-        progress: job.progress,
-        message: '生成失败',
-        detail: job.error
-      });
-    }
+  sendProgress(res, jobId, {
+    step: 'connect',
+    progress: 5,
+    message: '已连接 DeepSeek',
+    detail: '后端已接收主题，准备分块生成。'
   });
 
-  return job;
+  const quiz = await generateQuiz(topic, (progress) => {
+    sendProgress(res, jobId, progress);
+  });
+
+  sendProgress(res, jobId, {
+    step: 'saving',
+    progress: 94,
+    message: '正在保存问卷',
+    detail: '写入数据库并生成短链接。'
+  });
+
+  const quizId = `q_${nanoid(8)}`;
+  await insertQuiz({
+    id: quizId,
+    title: quiz.title,
+    topic: quiz.topic,
+    intro: quiz.intro,
+    dimensions: quiz.dimensions,
+    questions: quiz.questions,
+    results: quiz.results,
+    generationModel: quiz.generationModel,
+    rawAiResponse: quiz.rawAiResponse
+  });
+
+  sendEvent(res, 'done', {
+    id: jobId,
+    status: 'done',
+    step: 'done',
+    progress: 100,
+    message: '生成完成',
+    detail: '问卷已保存，可以编辑或发布。',
+    quiz: publicQuizPayload(quizId, quiz)
+  });
 }
 
 function normalizeTopic(topic) {
@@ -224,52 +168,52 @@ function mergeEditableQuestions(existingQuestions, incomingQuestions) {
 }
 
 quizzesRouter.get('/popular', asyncRoute(async (req, res) => {
-  const limit = Math.min(Number(req.query.limit || 8), 20);
-  res.json({ quizzes: listPopularQuizzes(limit) });
+  const requestedLimit = Number(req.query.limit || 8);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(requestedLimit, 20) : 8;
+  res.json({ quizzes: await listPopularQuizzes(limit) });
 }));
 
 quizzesRouter.post('/jobs', asyncRoute(async (req, res) => {
   const topic = normalizeTopic(req.body?.topic);
-  const job = createGenerationJob(topic);
-  res.status(202).json({
-    job: {
-      id: job.id,
-      status: job.status,
-      eventUrl: `/api/quizzes/jobs/${job.id}/events`
+  const jobId = `g_${nanoid(8)}`;
+  let responseClosed = false;
+
+  res.on('close', () => {
+    responseClosed = true;
+  });
+
+  writeSseHeaders(res);
+  const heartbeat = setInterval(() => {
+    if (!responseClosed && !res.writableEnded && !res.destroyed) {
+      res.write(': heartbeat\n\n');
     }
-  });
+  }, HEARTBEAT_INTERVAL_MS);
+
+  try {
+    await streamGenerationJob(topic, res, jobId);
+  } catch (error) {
+    sendEvent(res, 'failed', {
+      id: jobId,
+      status: 'failed',
+      step: 'failed',
+      progress: 0,
+      message: '生成失败',
+      detail: error.message || '生成失败，请重试。'
+    });
+  } finally {
+    clearInterval(heartbeat);
+    if (!responseClosed && !res.writableEnded && !res.destroyed) {
+      res.end();
+    }
+  }
 }));
-
-quizzesRouter.get('/jobs/:jobId/events', (req, res) => {
-  const job = generationJobs.get(req.params.jobId);
-  if (!job) {
-    res.status(404).json({ error: '没有找到这个生成任务。' });
-    return;
-  }
-
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive'
-  });
-  res.write('\n');
-
-  job.subscribers.add(res);
-  for (const event of job.events) {
-    sendEvent(res, event.event, event.payload);
-  }
-
-  req.on('close', () => {
-    job.subscribers.delete(res);
-  });
-});
 
 quizzesRouter.post('/', asyncRoute(async (req, res) => {
   const topic = normalizeTopic(req.body?.topic);
   const quiz = await generateQuiz(topic);
   const id = `q_${nanoid(8)}`;
 
-  insertQuiz({
+  await insertQuiz({
     id,
     title: quiz.title,
     topic: quiz.topic,
@@ -289,7 +233,7 @@ quizzesRouter.post('/', asyncRoute(async (req, res) => {
 }));
 
 quizzesRouter.get('/:id', asyncRoute(async (req, res) => {
-  const quiz = getQuiz(req.params.id);
+  const quiz = await getQuiz(req.params.id);
   if (!quiz) {
     throw new AppError(404, '没有找到这个测评。');
   }
@@ -297,7 +241,7 @@ quizzesRouter.get('/:id', asyncRoute(async (req, res) => {
 }));
 
 quizzesRouter.patch('/:id', asyncRoute(async (req, res) => {
-  const quiz = getQuiz(req.params.id);
+  const quiz = await getQuiz(req.params.id);
   if (!quiz) {
     throw new AppError(404, '没有找到这个测评。');
   }
@@ -306,7 +250,7 @@ quizzesRouter.patch('/:id', asyncRoute(async (req, res) => {
   const intro = String(req.body?.intro || quiz.intro || '').trim().slice(0, 120);
   const questions = mergeEditableQuestions(quiz.questions, req.body?.questions);
 
-  updateQuizEditable(quiz.id, { title, intro, questions });
+  await updateQuizEditable(quiz.id, { title, intro, questions });
 
   res.json({
     quiz: {
@@ -319,7 +263,7 @@ quizzesRouter.patch('/:id', asyncRoute(async (req, res) => {
 }));
 
 quizzesRouter.post('/:id/submit', asyncRoute(async (req, res) => {
-  const quiz = getQuiz(req.params.id);
+  const quiz = await getQuiz(req.params.id);
   if (!quiz) {
     throw new AppError(404, '没有找到这个测评。');
   }
@@ -327,14 +271,14 @@ quizzesRouter.post('/:id/submit', asyncRoute(async (req, res) => {
   const scored = scoreQuiz(quiz, req.body?.answers);
   const resultId = `r_${nanoid(8)}`;
 
-  insertResult({
+  await insertResult({
     id: resultId,
     quizId: quiz.id,
     answers: req.body.answers,
     scores: scored,
     typeCode: scored.typeCode
   });
-  incrementPlayCount(quiz.id);
+  await incrementPlayCount(quiz.id);
 
   res.status(201).json({
     resultId,
@@ -344,9 +288,9 @@ quizzesRouter.post('/:id/submit', asyncRoute(async (req, res) => {
 }));
 
 quizzesRouter.get('/:id/stats', asyncRoute(async (req, res) => {
-  const quiz = getQuiz(req.params.id);
+  const quiz = await getQuiz(req.params.id);
   if (!quiz) {
     throw new AppError(404, '没有找到这个测评。');
   }
-  res.json({ stats: getQuizStats(quiz.id) });
+  res.json({ stats: await getQuizStats(quiz.id) });
 }));

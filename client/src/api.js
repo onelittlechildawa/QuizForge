@@ -25,11 +25,26 @@ export const api = {
       body: JSON.stringify({ topic })
     });
   },
-  createQuizJob(topic) {
-    return request('/api/quizzes/jobs', {
+  async createQuizJob(topic, options = {}) {
+    const response = await fetch('/api/quizzes/jobs', {
       method: 'POST',
+      signal: options.signal,
+      headers: {
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify({ topic })
     });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      const error = new Error(payload.error || '请求失败，请稍后重试。');
+      error.details = payload.details;
+      error.status = response.status;
+      throw error;
+    }
+    if (!response.body) {
+      throw new Error('当前浏览器不支持读取生成进度，请更换现代浏览器后重试。');
+    }
+    return response;
   },
   getQuiz(id) {
     return request(`/api/quizzes/${encodeURIComponent(id)}`);

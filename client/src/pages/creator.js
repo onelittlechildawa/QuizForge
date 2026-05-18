@@ -209,6 +209,58 @@ function renderGenerating(state = {}, preview = createGenerationPreview()) {
   `;
 }
 
+function parseSseMessage(raw) {
+  const lines = raw.split(/\r?\n/);
+  let event = 'message';
+  const data = [];
+
+  for (const line of lines) {
+    if (!line || line.startsWith(':')) continue;
+    if (line.startsWith('event:')) {
+      event = line.slice(6).trim();
+    } else if (line.startsWith('data:')) {
+      data.push(line.slice(5).trimStart());
+    }
+  }
+
+  if (!data.length) return null;
+  return {
+    event,
+    payload: JSON.parse(data.join('\n'))
+  };
+}
+
+async function readSseStream(response, onEvent) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf('\n\n');
+    while (boundary >= 0) {
+      const raw = buffer.slice(0, boundary).trim();
+      buffer = buffer.slice(boundary + 2);
+      const message = parseSseMessage(raw);
+      if (message) {
+        onEvent(message);
+      }
+      boundary = buffer.indexOf('\n\n');
+    }
+  }
+
+  const tail = buffer.trim();
+  if (tail) {
+    const message = parseSseMessage(tail);
+    if (message) {
+      onEvent(message);
+    }
+  }
+}
+
 function renderScoreLabel(score, dimension) {
   const value = Number(score);
   if (value === 0) return '中间';
@@ -298,7 +350,7 @@ export const creatorPage = {
           <h1>创建一份新测评</h1>
           <p>模型由后端环境变量控制。生成失败时会直接提示错误，方便你确认 API Key 或网络状态。</p>
           <div class="info-list">
-            <span><i data-lucide="database"></i> SQLite 本地持久化</span>
+            <span><i data-lucide="database"></i> 数据库持久化</span>
             <span><i data-lucide="link"></i> 短链接分享</span>
             <span><i data-lucide="bar-chart-3"></i> 类人格维度评分</span>
           </div>
@@ -325,7 +377,7 @@ export const creatorPage = {
     const button = document.querySelector('#generateButton');
     const status = document.querySelector('#creatorStatus');
     let latestQuiz = null;
-    let eventSource = null;
+    let generationAbortController = null;
     let generationPreview = createGenerationPreview();
 
     function collectEditedQuiz() {
@@ -389,55 +441,55 @@ export const creatorPage = {
         step: 'connect',
         progress: 1,
         message: '正在创建任务',
-        detail: '请求后端创建真实生成任务。'
+        detail: '正在打开后端生成进度流。'
       }, generationPreview);
       refreshIcons();
-      eventSource?.close();
+      generationAbortController?.abort();
+      generationAbortController = new AbortController();
 
       try {
-        const { job } = await api.createQuizJob(topic);
-        eventSource = new EventSource(job.eventUrl);
-
-        eventSource.addEventListener('progress', (event) => {
-          const progress = JSON.parse(event.data);
-          generationPreview = mergeGenerationPreview(generationPreview, progress.preview);
-          status.innerHTML = renderGenerating(progress, generationPreview);
-          refreshIcons();
+        const response = await api.createQuizJob(topic, {
+          signal: generationAbortController.signal
         });
+        let completed = false;
+        let failedMessage = '';
 
-        eventSource.addEventListener('done', (event) => {
-          const payload = JSON.parse(event.data);
-          latestQuiz = payload.quiz;
-          eventSource.close();
-          eventSource = null;
-          status.innerHTML = renderPreview(payload.quiz);
-          bindEditor();
-          button.disabled = false;
-          refreshIcons();
-        });
-
-        eventSource.addEventListener('failed', (event) => {
-          const payload = JSON.parse(event.data);
-          eventSource.close();
-          eventSource = null;
-          status.innerHTML = renderError(payload.detail || '生成失败，请重试。');
-          button.disabled = false;
-          refreshIcons();
-        });
-
-        eventSource.onerror = () => {
-          if (eventSource) {
-            eventSource.close();
-            eventSource = null;
-            status.innerHTML = renderError('生成进度连接中断，请重试。');
-            button.disabled = false;
+        await readSseStream(response, ({ event, payload }) => {
+          if (event === 'progress') {
+            generationPreview = mergeGenerationPreview(generationPreview, payload.preview);
+            status.innerHTML = renderGenerating(payload, generationPreview);
             refreshIcons();
+            return;
           }
-        };
+
+          if (event === 'done') {
+            completed = true;
+            latestQuiz = payload.quiz;
+            status.innerHTML = renderPreview(payload.quiz);
+            bindEditor();
+            refreshIcons();
+            return;
+          }
+
+          if (event === 'failed') {
+            failedMessage = payload.detail || '生成失败，请重试。';
+          }
+        });
+
+        if (failedMessage) {
+          throw new Error(failedMessage);
+        }
+        if (!completed) {
+          throw new Error('生成连接提前结束，请重试。');
+        }
       } catch (error) {
-        status.innerHTML = renderError(error.message);
+        if (error.name !== 'AbortError') {
+          status.innerHTML = renderError(error.message);
+          refreshIcons();
+        }
+      } finally {
+        generationAbortController = null;
         button.disabled = false;
-        refreshIcons();
       }
     }
 

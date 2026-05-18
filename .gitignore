@@ -5,5 +5,6 @@ server/data/*.db
 server/data/*.db-*
 server/logs/
 server/public/
+public/
 dist/
 npm-debug.log*
